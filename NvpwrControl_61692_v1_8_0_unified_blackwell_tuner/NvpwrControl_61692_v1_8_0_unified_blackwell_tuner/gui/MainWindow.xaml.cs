@@ -402,6 +402,17 @@ namespace NvpwrControl
 			{
 				_refreshTimer.Stop();
 			}
+
+			// The helper was loaded for this session only. Unloading it here leaves the machine
+			// with no self-signed driver resident while the power ceiling stays where it was set
+			// — the value lives in NVIDIA's own state, not ours. DSE is already back on: it is
+			// restored the moment the service reports RUNNING, not held off for the session.
+			if (Driver.IsOpenable())
+			{
+				UnlockChain.Unload();
+				Store.Log("已卸载内核驱动，功耗设置保持到重启");
+			}
+
 			Store.Log("NvpwrControl 退出");
 		}
 
@@ -750,6 +761,26 @@ namespace NvpwrControl
 				return false;
 			}
 			string error;
+
+			/*
+				Bring the kernel helper up if it is not already running.
+
+				This is what closes signature enforcement, starts the service and waits for the
+				device object — several seconds, and a brief window without DSE. It only runs when
+				the device is closed, so once the helper is up every further apply in this session
+				is a plain IOCTL.
+
+				It may also restart the display device first. The helper identifies the factory
+				baseline by recognising a stock-looking limit and refuses to work once the limit
+				has been changed, so a rail that is no longer at the factory value has to be put
+				back before a fresh helper can be loaded at all.
+			*/
+			if (!Driver.IsOpenable() && !UnlockChain.EnsureLoaded(_powerFloorW, out error))
+			{
+				Warn(error);
+				return false;
+			}
+
 			if (num == 0 || watts <= _powerFloorW)
 			{
 				Store.SetRestorePoint("恢复出厂前", _state);
