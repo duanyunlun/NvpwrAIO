@@ -160,6 +160,32 @@ namespace NvpwrControl
             return true;
         }
 
+        /// <summary>
+        /// Waits for the device to become openable after the service is started.
+        ///
+        /// Starting a kernel service returns as soon as the loader has queued the driver, not
+        /// when DriverEntry has finished creating the device object. Issuing an IOCTL into that
+        /// window fails, and the failure is indistinguishable from a real error. Observed while
+        /// testing the apply chain: a status query 800 ms after "sc start" reported the stock
+        /// baseline and ignored the target, while the same query a few seconds later worked.
+        ///
+        /// Polls rather than sleeping a fixed amount, so a fast machine is not slowed down and a
+        /// slow one is still covered.
+        /// </summary>
+        public static bool WaitUntilReady(int timeoutMs)
+        {
+            System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
+            while (clock.ElapsedMilliseconds < timeoutMs)
+            {
+                if (IsOpenable())
+                {
+                    return true;
+                }
+                System.Threading.Thread.Sleep(100);
+            }
+            return IsOpenable();
+        }
+
         /// <summary>Reads the live driver status. Returns false with a reason.</summary>
         public static bool QueryStatus(out Status status, out string error)
         {

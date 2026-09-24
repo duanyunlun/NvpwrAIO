@@ -156,20 +156,47 @@ namespace NvpwrControl
 			base.Closing += OnClosing;
 		}
 
+		/// <summary>
+		/// The factory power wall, in watts.
+		///
+		/// Order matters here, and the reason is that the value cannot be re-read once it has
+		/// been changed: anything read live afterwards is the number this program wrote.
+		///
+		///   1. A loaded, unmodified driver reports OemBaseline. Authoritative, and recorded.
+		///   2. A recorded value beats any live reading, because the live reading may be ours.
+		///   3. Only with nothing on record does the NVML fallback run, capturing whatever it
+		///      finds. That is a first launch after a reboot, where the wall is still factory.
+		///
+		/// The previous version kept no record and went straight to the NVML reading, so after
+		/// raising the ceiling to 200 W it reported 200 W as the factory wall.
+		/// </summary>
 		private int ReadPowerFloorW()
 		{
-			if (Driver.QueryStatus(out var status, out var _))
+			if (Driver.QueryStatus(out var status, out var _) && status.OemBaseline != 0)
 			{
-				uint num = ((status.OemBaseline != 0) ? status.OemBaseline : status.UpperBoundary);
-				if (num != 0)
+				int fromDriver = (int)(status.OemBaseline / 1000);
+				if (fromDriver > 0 && _state.PowerFloorW != fromDriver)
 				{
-					return (int)(num / 1000);
+					_state.PowerFloorW = fromDriver;
+					Store.Log("出厂功耗墙已记录: " + fromDriver + " W（驱动 OemBaseline）");
+					SaveState();
 				}
+				return fromDriver;
 			}
+
+			if (_state.PowerFloorW > 0)
+			{
+				return _state.PowerFloorW;
+			}
+
 			EnvSample envSample = Telemetry.Sample();
 			if (envSample.HasPowerLimit && envSample.EnforcedLimitW > 0.0)
 			{
-				return (int)Math.Round(envSample.EnforcedLimitW);
+				int captured = (int)Math.Round(envSample.EnforcedLimitW);
+				_state.PowerFloorW = captured;
+				Store.Log("出厂功耗墙已记录: " + captured + " W（NVML，首次运行）");
+				SaveState();
+				return captured;
 			}
 			return 350;
 		}

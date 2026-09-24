@@ -71,6 +71,20 @@ namespace NvpwrControl
         public uint PowerMw;
         public uint CeilingMw;
         public uint Profile;
+
+        /// <summary>
+        /// The factory power wall in watts, recorded once and then trusted.
+        ///
+        /// It cannot be read back on demand, because the value any source would return is the
+        /// one the GPU currently enforces — and changing that is this program's job. Measured
+        /// directly: raising the ceiling to 200 W moved both the NVML maximum and the driver
+        /// upper boundary to 200, after which the interface announced a factory wall of 200 W.
+        ///
+        /// The driver OemBaseline is authoritative while it is loaded and untouched, so that is
+        /// what gets recorded. The boot service runs before anything has been applied, which is
+        /// the one moment a live reading is guaranteed to be the factory value.
+        /// </summary>
+        public int PowerFloorW;
         public VoltageTuning Voltage = new VoltageTuning();
         public ClockTuning Clock = new ClockTuning();
         public string MvoltPath = "";
@@ -208,6 +222,7 @@ namespace NvpwrControl
             b.AppendLine(p + "power_mw=" + s.PowerMw);
             b.AppendLine(p + "power_ceiling_mw=" + s.CeilingMw);
             b.AppendLine(p + "power_profile=" + s.Profile);
+            b.AppendLine(p + "power_floor_w=" + s.PowerFloorW);
             b.AppendLine(p + "voltage_enabled=" + (s.Voltage.Enabled ? 1 : 0));
             b.AppendLine(p + "voltage_applier=1");   // 1 = companion tool
             b.AppendLine(p + "nvvdd_vmin_uv=" + s.Voltage.Nvvdd.VminUv);
@@ -275,6 +290,7 @@ namespace NvpwrControl
             uint ceiling = (uint)num("power_ceiling_mw");
             s.CeilingMw = ceiling == 0 ? Driver.DefaultCeilingMw : ceiling;
             s.Profile = (uint)num("power_profile");
+            s.PowerFloorW = (int)num("power_floor_w");
 
             s.Voltage.Enabled = num("voltage_enabled") != 0;
             s.Voltage.Nvvdd.VminUv = num("nvvdd_vmin_uv");
