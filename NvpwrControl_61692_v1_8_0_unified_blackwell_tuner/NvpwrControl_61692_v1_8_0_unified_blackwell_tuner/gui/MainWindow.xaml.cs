@@ -1509,17 +1509,17 @@ namespace NvpwrControl
 
 		internal void Warn(string message)
 		{
-			MessageBox.Show(this, message, "Nvpwr 控制台", MessageBoxButton.OK, MessageBoxImage.Exclamation);
+			ConfirmDialog.Ask(this, message, withCancel: false);
 		}
 
 		internal void Info(string message)
 		{
-			MessageBox.Show(this, message, "Nvpwr 控制台", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+			ConfirmDialog.Ask(this, message, withCancel: false);
 		}
 
 		internal bool Confirm(string message)
 		{
-			return MessageBox.Show(this, message, "Nvpwr 控制台", MessageBoxButton.OKCancel, MessageBoxImage.Exclamation) == MessageBoxResult.OK;
+			return ConfirmDialog.Ask(this, message, withCancel: true);
 		}
 
 	}

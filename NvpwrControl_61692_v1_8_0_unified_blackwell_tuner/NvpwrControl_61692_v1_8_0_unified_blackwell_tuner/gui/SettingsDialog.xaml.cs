@@ -55,7 +55,7 @@ namespace NvpwrControl
             string error;
             if (!Service.SetAutoStart(want, out error))
             {
-                MessageBox.Show(this, error, "Nvpwr 控制台", MessageBoxButton.OK, MessageBoxImage.Warning);
+                ConfirmDialog.Ask(this, error, withCancel: false);
                 ChkStartWin.IsChecked = !want;
                 return;
             }
@@ -86,25 +86,23 @@ namespace NvpwrControl
         {
             string error;
             if (!Service.Install(out error))
-                MessageBox.Show(this, error, "Nvpwr 控制台", MessageBoxButton.OK, MessageBoxImage.Warning);
+                ConfirmDialog.Ask(this, error, withCancel: false);
             else
             {
                 Store.Log("后台服务已安装并启动");
-                MessageBox.Show(this, "后台服务已安装。开机后会自动重新下发功耗与电压。",
-                                "Nvpwr 控制台", MessageBoxButton.OK, MessageBoxImage.Information);
+                ConfirmDialog.Ask(this, "后台服务已安装。开机后会自动重新下发功耗与电压。", withCancel: false);
             }
             RefreshServiceState();
         }
 
         private void OnRemoveService(object sender, RoutedEventArgs e)
         {
-            if (MessageBox.Show(this, "停止并移除后台服务？移除后开机不会自动重放设置。",
-                                "Nvpwr 控制台", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            if (!ConfirmDialog.Ask(this, "停止并移除后台服务？\r\n\r\n移除后开机不会自动重放设置。", withCancel: true))
                 return;
 
             string error;
             if (!Service.Remove(out error))
-                MessageBox.Show(this, error, "Nvpwr 控制台", MessageBoxButton.OK, MessageBoxImage.Warning);
+                ConfirmDialog.Ask(this, error, withCancel: false);
             else Store.Log("后台服务已移除");
             RefreshServiceState();
         }
@@ -133,9 +131,9 @@ namespace NvpwrControl
 
         private void OnStandardMode(object sender, RoutedEventArgs e)
         {
-            if (MessageBox.Show(this,
-                "切换到标准模式？\r\n\r\n会恢复出厂设置、停止服务并移除内核驱动，以便运行要求开启 Secure Boot 的反作弊游戏。你的设置会保留，切回解锁模式后会重新应用。",
-                "Nvpwr 控制台", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            if (!ConfirmDialog.Ask(this,
+                "切换到标准模式？\r\n\r\n会恢复出厂设置、停止服务并移除内核驱动，以便运行要求开启 Secure Boot 的反作弊游戏。\r\n\r\n你的设置会保留，切回解锁模式后会重新应用。",
+                withCancel: true))
                 return;
 
             string error;
@@ -144,8 +142,8 @@ namespace NvpwrControl
             Service.Remove(out error);
 
             Store.Log("已切换到标准模式");
-            MessageBox.Show(this, "已切换到标准模式。要重新启用解锁，请重启后再打开本程序并安装服务。",
-                            "Nvpwr 控制台", MessageBoxButton.OK, MessageBoxImage.Information);
+            ConfirmDialog.Ask(this, "已切换到标准模式。要重新启用解锁，请重启后再打开本程序并安装服务。",
+                              withCancel: false);
             RefreshServiceState();
         }
 

@@ -1,0 +1,107 @@
+<Window x:Class="NvpwrControl.ConfirmDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Nvpwr 控制台"
+        Width="520"
+        SizeToContent="Height"
+        MaxHeight="640"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner"
+        Background="#10131A"
+        TextOptions.TextFormattingMode="Ideal"
+        TextOptions.TextRenderingMode="ClearType"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        FontFamily="Microsoft YaHei UI"
+        FontSize="13">
+
+    <!--
+        A themed replacement for MessageBox.
+
+        MessageBox was drawn by Windows in its own light chrome, which sat badly
+        against everything else here — and at 200% scaling it sized itself from the
+        unwrapped text, so a long warning pushed the dialog past the edge of the
+        window and cut off its buttons. This one wraps, scrolls if it has to, and
+        looks like the rest of the app.
+    -->
+
+    <Window.Resources>
+        <Style x:Key="Btn" TargetType="Button">
+            <Setter Property="Foreground" Value="#EDF2F7"/>
+            <Setter Property="Background" Value="#2D3748"/>
+            <Setter Property="BorderBrush" Value="#3E4C63"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="16,8"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="MinWidth" Value="84"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="Opacity" Value="0.85"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="bd" Property="BorderBrush" Value="#76B900"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="BtnPrimary" TargetType="Button" BasedOn="{StaticResource Btn}">
+            <Setter Property="Background" Value="#76B900"/>
+            <Setter Property="Foreground" Value="#0C1408"/>
+            <Setter Property="BorderBrush" Value="#8FD400"/>
+        </Style>
+    </Window.Resources>
+
+    <Border Background="#161A23" BorderBrush="#2D3546" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- Title strip. There is no system chrome, so this is what the window is dragged by. -->
+            <Border Grid.Row="0" Background="#1B202B" BorderBrush="#2D3546"
+                    BorderThickness="0,0,0,1" Padding="16,11"
+                    MouseLeftButtonDown="OnTitleBarDrag">
+                <StackPanel Orientation="Horizontal">
+                    <Border x:Name="TitleAccent" Width="3" CornerRadius="2" Margin="0,1,9,1"
+                            Background="#FBBF24"/>
+                    <TextBlock x:Name="TitleText" Text="Nvpwr 控制台" FontSize="14"
+                               FontWeight="SemiBold" Foreground="#EDF2F7"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled" Padding="18,16,18,4">
+                <TextBlock x:Name="MessageText" Foreground="#CBD5E1"
+                           TextWrapping="Wrap" LineHeight="21"/>
+            </ScrollViewer>
+
+            <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right"
+                        Margin="18,14,18,16">
+                <Button x:Name="CancelButton" Content="取消" Style="{StaticResource Btn}"
+                        Margin="0,0,9,0" IsCancel="True" Click="OnCancel"/>
+                <Button x:Name="OkButton" Content="确定" Style="{StaticResource BtnPrimary}"
+                        IsDefault="True" Click="OnOk"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>
