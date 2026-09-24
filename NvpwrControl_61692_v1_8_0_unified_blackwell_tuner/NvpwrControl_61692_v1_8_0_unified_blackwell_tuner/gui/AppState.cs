@@ -870,6 +870,35 @@ namespace NvpwrControl
             });
 
             /*
+                EfiGuard, sitting next to Secure Boot because it is the other item that cannot be
+                changed from this program.
+
+                The two are grouped by what the user can do about them rather than by what they
+                are about: these two have to be dealt with elsewhere (firmware, boot entry), and
+                the three below them can all be toggled right here. Mixing the two kinds together
+                made the row read as five settings of the same sort, when only three of them are.
+
+                Without EfiGuard there is no way to load a self-signed driver short of test-signing
+                mode, which needs a reboot and leaves a marker anti-cheat software reads.
+            */
+            bool efiPresent = File.Exists(Path.Combine(
+                Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName), "EfiDSEFix.exe"));
+            bool efiBooted = efiPresent && DseControl.IsBooted();
+            list.Add(new UnlockCheck
+            {
+                Name = "EfiGuard",
+                Ok = efiBooted,
+                Blocking = !efiBooted,
+                Detail = !efiPresent ? "未找到 EfiDSEFix.exe"
+                                     : (efiBooted ? "已生效" : "已安装，但本次未经它引导"),
+                ActionId = null,
+                ManualHint = efiPresent
+                    ? "本次启动没有经过 EfiGuard，无法临时关闭驱动签名强制。\n" +
+                      "请重启并从 EfiGuard 启动项进入系统。"
+                    : "EfiDSEFix.exe 需要与本程序放在同一目录。"
+            });
+
+            /*
                 Virtualisation-based security, which is the blocker people miss.
 
                 The Windows Security page shows Memory Integrity, and that can read as off while
@@ -959,27 +988,6 @@ namespace NvpwrControl
                 ClickAction = present.Count == 0 ? "恢复 CI 策略文件" : "清除 CI 策略文件",
                 ManualHint = "已签名的 WDAC 策略独立于注册表开关生效。清除会先备份到程序数据目录，可还原。\n" +
                              "这些文件受保护，操作需要管理员权限；Secure Boot 必须已关闭，否则策略会被重新应用。"
-            });
-
-            // EfiGuard. Without it there is no way to load a self-signed driver short of
-            // test-signing mode, which needs a reboot and leaves a marker anti-cheat software
-            // reads. This is checked last because it is the only item that depends on how the
-            // machine was booted rather than on a setting.
-            bool efiPresent = File.Exists(Path.Combine(
-                Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName), "EfiDSEFix.exe"));
-            bool efiBooted = efiPresent && DseControl.IsBooted();
-            list.Add(new UnlockCheck
-            {
-                Name = "EfiGuard",
-                Ok = efiBooted,
-                Blocking = !efiBooted,
-                Detail = !efiPresent ? "未找到 EfiDSEFix.exe"
-                                     : (efiBooted ? "已生效" : "已安装，但本次未经它引导"),
-                ActionId = null,
-                ManualHint = efiPresent
-                    ? "本次启动没有经过 EfiGuard，无法临时关闭驱动签名强制。\n" +
-                      "请重启并从 EfiGuard 启动项进入系统。"
-                    : "EfiDSEFix.exe 需要与本程序放在同一目录。"
             });
 
             return list;
