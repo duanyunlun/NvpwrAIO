@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Nvpwr Control 1.9.0 — .NET WinForms front end.
+
+    Why WinForms and not the previous raw Win32 UI:
+      The Win32 build positioned every control by hand in absolute client
+      coordinates. That is why labels overlapped, three page containers were
+      created 0x0 and clipped all their children, and the navigation captions
+      ended up misaligned with their pages. WinForms' layout panels make those
+      whole classes of bug impossible: sizes come from content, and DPI scaling
+      is the framework's problem rather than a table of pixel constants.
+
+    Why x64 only:
+      The kernel helper is a 64-bit driver and Driver.cs opens \\.\Nvpwr directly.
+      An AnyCPU build would silently misbehave under a 32-bit host.
+
+    Why net6.0-windows:
+      The .NET 6 Desktop runtime is already present on the target machine, so the
+      app runs without an extra runtime install.
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <!--
+      WPF, not WinForms. The two earlier UI builds were raw Win32 and then
+      WinForms; both ended up positioning controls by hand, and on a 3840x2400
+      panel at 200% scaling that produced overlapping labels, clipped cards and a
+      window sized in the wrong unit system. WPF's device-independent layout and
+      vector rendering remove that whole failure class, which matters because
+      high-DPI laptop panels are now the norm rather than the exception.
+    -->
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>false</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>NvpwrControl</AssemblyName>
+    <RootNamespace>NvpwrControl</RootNamespace>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <LangVersion>latest</LangVersion>
+    <!-- Chinese string literals in the sources; keep the compiler on UTF-8. -->
+    <CodePage>65001</CodePage>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Version>1.9.0</Version>
+    <Product>Nvpwr Control</Product>
+    <AssemblyTitle>Nvpwr Control 1.9.0</AssemblyTitle>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      ServiceController lives in its own package on .NET 6.
+      System.Management is deliberately NOT referenced: the adapter name comes
+      from DXGI (see Telemetry), which removes a managed dependency and the
+      deployment failures that come with forgetting to ship it.
+    -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="6.0.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,635 @@
+<Window x:Class="NvpwrControl.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Nvpwr Control 1.9.0"
+        Width="1293" Height="756"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        Background="#10131A"
+        TextOptions.TextFormattingMode="Ideal"
+        TextOptions.TextRenderingMode="ClearType"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        FontFamily="Microsoft YaHei UI"
+        FontSize="13">
+
+    <!--
+        Three cards side by side, then everything else as buttons.
+
+          功耗 | 电压 | 频率
+
+        The window is a fixed 1280x720 client area (ResizeMode NoResize; the outer size is the
+        client size plus the 13x36 frame Windows draws). Content is laid out for exactly that
+        many pixels, so nothing scrolls and nothing is clipped.
+
+        Each card shows its own readings as value-over-caption pairs, so a card answers its own
+        question without the reader having to look elsewhere on screen.
+
+        Voltage offers both routes to the rail, because they are different controls:
+          · 最低/最高电压    absolute limits across the device range 445-1280 mV; these drive
+                             the VMIN and REL offsets
+          · 核心/XBAR 偏移   demand offsets, -25…+50 mV; these request a voltage rather than
+                             bounding one
+        Every one is a draggable slider — this card has no stepper buttons.
+    -->
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="Rail"        Color="#161A23"/>
+        <SolidColorBrush x:Key="CardBg"      Color="#1B202B"/>
+        <SolidColorBrush x:Key="CardBorder"  Color="#2D3546"/>
+        <SolidColorBrush x:Key="NoteBg"      Color="#151922"/>
+        <SolidColorBrush x:Key="FieldBg"     Color="#232936"/>
+        <SolidColorBrush x:Key="FieldBorder" Color="#39435A"/>
+        <SolidColorBrush x:Key="TextMain"    Color="#EDF2F7"/>
+        <SolidColorBrush x:Key="TextMuted"   Color="#94A3B8"/>
+        <SolidColorBrush x:Key="TextDim"     Color="#64748B"/>
+        <SolidColorBrush x:Key="Accent"      Color="#76B900"/>
+        <SolidColorBrush x:Key="Info"        Color="#38BDF8"/>
+        <SolidColorBrush x:Key="Warn"        Color="#FBBF24"/>
+        <SolidColorBrush x:Key="Danger"      Color="#EF6461"/>
+
+        <Style x:Key="Caption" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextDim}"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+
+        <Style x:Key="CardNote" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+            <Setter Property="FontSize" Value="11.5"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+
+        <Style x:Key="RowLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <!--
+            The value line of a card reading. All nine readings across the three cards share it,
+            so they sit on one baseline and their captions line up. Sizing one of them separately
+            to make it fit (which an earlier version did) left it visibly smaller than its
+            neighbours and pushed its caption out of line with theirs.
+        -->
+        <Style x:Key="BigNumber" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="20"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <!--
+            The value line of a card reading. Every reading in a card uses this, so the three sit
+            on one baseline and their captions line up. An earlier version overrode the font size
+            on a single reading to make it fit, which left it visibly smaller than its neighbours
+            and pushed its caption out of line with theirs.
+        -->
+        <Style x:Key="ReadingValue" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="20"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="0,0,0,0"/>
+        </Style>
+
+        <Style x:Key="BigSub" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11.5"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <Style x:Key="Input" TargetType="TextBox">
+            <Setter Property="Background" Value="{StaticResource FieldBg}"/>
+            <Setter Property="Foreground" Value="{StaticResource TextMain}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource FieldBorder}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="CaretBrush" Value="{StaticResource TextMain}"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="TextAlignment" Value="Center"/>
+            <Setter Property="Width" Value="66"/>
+        </Style>
+
+        <Style x:Key="Btn" TargetType="Button">
+            <Setter Property="Foreground" Value="{StaticResource TextMain}"/>
+            <Setter Property="Background" Value="#2D3748"/>
+            <Setter Property="BorderBrush" Value="#3E4C63"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="13,7"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Margin" Value="0,0,7,0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="Opacity" Value="0.85"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="bd" Property="Opacity" Value="0.4"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="BtnPrimary" TargetType="Button" BasedOn="{StaticResource Btn}">
+            <Setter Property="Background" Value="{StaticResource Accent}"/>
+            <Setter Property="Foreground" Value="#0C1408"/>
+            <Setter Property="BorderBrush" Value="#8FD400"/>
+        </Style>
+
+        <Style x:Key="BtnDanger" TargetType="Button" BasedOn="{StaticResource Btn}">
+            <Setter Property="Background" Value="#462026"/>
+            <Setter Property="Foreground" Value="{StaticResource Danger}"/>
+            <Setter Property="BorderBrush" Value="#6E323A"/>
+        </Style>
+
+        <Style x:Key="BtnGhost" TargetType="Button" BasedOn="{StaticResource Btn}">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="{StaticResource CardBorder}"/>
+        </Style>
+
+        <Style x:Key="Step" TargetType="Button" BasedOn="{StaticResource Btn}">
+            <Setter Property="Background" Value="#232936"/>
+            <Setter Property="BorderBrush" Value="{StaticResource FieldBorder}"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Width" Value="34"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="FontSize" Value="16"/>
+        </Style>
+
+        <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextMain}"/>
+            <Setter Property="FontSize" Value="15"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+
+        <Style x:Key="Card" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource CardBg}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource CardBorder}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="13,12"/>
+            <Setter Property="VerticalAlignment" Value="Stretch"/>
+        </Style>
+
+        <Style x:Key="NotePanel" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource NoteBg}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource CardBorder}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Margin" Value="0,10,0,0"/>
+            <Setter Property="VerticalAlignment" Value="Bottom"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ===== header ===== -->
+        <Border Grid.Row="0" Background="{StaticResource Rail}"
+                BorderBrush="{StaticResource CardBorder}" BorderThickness="0,0,0,1" Padding="18,9">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="NVPWR" FontSize="17" FontWeight="Bold"
+                           Foreground="{StaticResource TextMain}" VerticalAlignment="Center"/>
+                <TextBlock x:Name="SubtitleText" Text="笔记本显卡功耗控制" FontSize="12"
+                           Foreground="{StaticResource TextMuted}" Margin="12,0,0,0"
+                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+            </StackPanel>
+        </Border>
+
+        <!-- ===================== three cards ===================== -->
+        <Grid Grid.Row="1" Margin="14,12,14,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ===== 功耗 ===== -->
+            <Border Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,6,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                <Border Width="3" CornerRadius="2" Margin="0,1,8,1"
+                                        Background="{StaticResource Accent}"/>
+                                <TextBlock Text="功耗" Style="{StaticResource SectionTitle}"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                        HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <TextBlock Text="出厂功耗墙" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource TextDim}" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="PwFloorLabel" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource Accent}" FontWeight="Bold"
+                                           VerticalAlignment="Center" Margin="5,0,0,0" Text="—"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                            <StackPanel Margin="0,0,30,0">
+                                <TextBlock x:Name="PwNow" Style="{StaticResource BigNumber}"
+                                           Foreground="{StaticResource TextMain}" Text="—"/>
+                                <TextBlock Text="当前功耗" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
+                            </StackPanel>
+                            <StackPanel Margin="0,0,30,0">
+                                <TextBlock x:Name="PwLimitNow" Style="{StaticResource BigNumber}"
+                                           Foreground="{StaticResource TextMain}" Text="—"/>
+                                <TextBlock Text="当前上限" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
+                            </StackPanel>
+                            <!-- Temperature lives here now: it belongs with power, since the two
+                                 together decide whether a raised ceiling can actually be used. -->
+                            <StackPanel>
+                                <TextBlock x:Name="PwTemp" Style="{StaticResource BigNumber}"
+                                           Foreground="{StaticResource TextMain}" Text="—"/>
+                                <TextBlock Text="核心温度" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!--
+                            Read left to right as a range: what the card defaults to, the stepper
+                            that moves the target, and the ceiling it can be moved to. The floor
+                            and ceiling sit on the sides the stepper can actually reach them from,
+                            so the row reads as a scale rather than a value followed by a note.
+                        -->
+                        <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
+                            <TextBlock x:Name="PwFloorRef" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Margin="0,0,7,0" Text="—"/>
+                            <Button x:Name="PwMinus" Content="−" Style="{StaticResource Step}"
+                                    Click="OnPowerMinus"/>
+                            <TextBlock x:Name="PwTargetNow" Style="{StaticResource BigNumber}" FontSize="20"
+                                       Foreground="{StaticResource Warn}" Text="0 W"
+                                       MinWidth="66" TextAlignment="Center" Margin="2,0,2,0"/>
+                            <Button x:Name="PwPlus" Content="+" Style="{StaticResource Step}" Click="OnPowerPlus"/>
+                            <TextBlock x:Name="PwMaxLabel" Style="{StaticResource Caption}"
+                                       Foreground="{StaticResource Danger}" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" Margin="3,0,0,0" Text="—"/>
+                            <Button Content="复位" Style="{StaticResource BtnDanger}" Padding="10,7"
+                                    Margin="10,0,7,0" Click="OnPowerReset"/>
+                            <Button Content="应用" Style="{StaticResource BtnPrimary}" MinWidth="48"
+                                    Padding="9,7" Margin="0" Click="OnApplyPower"/>
+                        </StackPanel>
+
+                        <TextBlock x:Name="PwHint" Style="{StaticResource Caption}" Margin="0,10,0,0"/>
+                    </StackPanel>
+
+                    <Border Grid.Row="1" Style="{StaticResource NotePanel}">
+                        <StackPanel>
+                            <TextBlock Text="注意" FontSize="11" FontWeight="SemiBold"
+                                       Foreground="{StaticResource Accent}" Margin="0,0,0,5"/>
+                            <TextBlock Style="{StaticResource CardNote}"
+                                       Text="· 申请值 ≠ 生效值。驱动会与 NVIDIA 自身策略比对并回读，不一致就回滚到出厂基线。"/>
+                            <TextBlock Style="{StaticResource CardNote}" Margin="0,6,0,0"
+                                       Text="· 功耗上限只在驱动内存里，重启必然失效。要重启后继续生效，需点下方“安装服务”。"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <!-- ===== 电压 ===== -->
+            <Border Grid.Column="1" Style="{StaticResource Card}" Margin="6,0,6,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                <Border Width="3" CornerRadius="2" Margin="0,1,8,1"
+                                        Background="{StaticResource Info}"/>
+                                <TextBlock Text="电压" Style="{StaticResource SectionTitle}"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <StackPanel Margin="0,0,24,0">
+                                <TextBlock x:Name="VoltNow" Style="{StaticResource BigNumber}"
+                                           Foreground="{StaticResource Info}" Text="—"/>
+                                <TextBlock Text="核心电压" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
+                            </StackPanel>
+                            <StackPanel Margin="0,0,24,0">
+                                <TextBlock x:Name="VoltApplied" Style="{StaticResource BigNumber}"
+                                           Foreground="{StaticResource TextMain}" Text="—"/>
+                                <TextBlock Text="已应用偏移" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
+                            </StackPanel>
+                            <StackPanel>
+                                <TextBlock x:Name="VoltLimitsNow" Style="{StaticResource BigNumber}"
+                                           Foreground="{StaticResource TextMain}" Text="—"/>
+                                <TextBlock Text="当前上下限" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- Absolute voltage limits. The span is the device range 445-1280 mV, far
+                             wider than any offset, and the driver's own offsets are derived from
+                             these two values. -->
+                        <Grid Margin="0,16,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource RowLabel}" TextTrimming="CharacterEllipsis" Text="最低电压 · VMIN 偏移" ToolTip="调整最低工作电压，对应驱动的 VMIN 偏移。&#10;范围 445–1280 mV，是供电轨器件允许的区间。"/>
+                            <TextBlock Grid.Column="1" x:Name="MinVoltLabel" Style="{StaticResource BigSub}"
+                                       Foreground="{StaticResource Info}" FontWeight="SemiBold" Text="— mV"/>
+                        </Grid>
+                        <Slider x:Name="MinVoltSlider" Minimum="445" Maximum="1025" Value="625"
+                                TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
+                                ValueChanged="OnMinVoltSliderChanged"/>
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource RowLabel}" TextTrimming="CharacterEllipsis" Text="最高电压 · REL/ALT 偏移（降压主力）" ToolTip="调整最高工作电压，对应驱动的 REL 与 ALT/OP 偏移。&#10;降压超频主要靠它：把上限压低，GPU 就会在更低的电压下跑。&#10;范围 445–1280 mV。"/>
+                            <TextBlock Grid.Column="1" x:Name="MaxVoltLabel" Style="{StaticResource BigSub}"
+                                       Foreground="{StaticResource Info}" FontWeight="SemiBold" Text="— mV"/>
+                        </Grid>
+                        <Slider x:Name="MaxVoltSlider" Minimum="1025" Maximum="1150" Value="1025"
+                                TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
+                                ValueChanged="OnMaxVoltSliderChanged"/>
+
+
+                        <!-- The arithmetic for the two limits, directly under the two sliders it
+                             describes. At the bottom of the card it looked like a summary of every
+                             control, but the demand offsets below are independent of the limits and
+                             do not feed into this. -->
+                        <Border Background="{StaticResource NoteBg}" BorderBrush="{StaticResource CardBorder}"
+                                BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,10,0,0">
+                            <StackPanel>
+                                <TextBlock x:Name="MinFormulaLabel" Style="{StaticResource CardNote}"
+                                           Foreground="{StaticResource TextMain}" Text="下限 —"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                                    <TextBlock x:Name="MaxFormulaLabel" Style="{StaticResource CardNote}"
+                                               Foreground="{StaticResource TextMain}" Text="上限 —"/>
+                                    <TextBlock x:Name="OvParenthetical" Style="{StaticResource CardNote}"
+                                               Margin="8,0,0,0" Text="(OV —)"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+
+
+
+                        <!-- OV is its own control, the way the companion tool has it. It is the
+                             only offset that can pull the effective maximum *down*: REL does not
+                             accept negative values on this rail. The label states whether the
+                             ceiling is currently binding, because most of its travel does nothing.
+                             -->
+                        <TextBlock Style="{StaticResource RowLabel}" Margin="0,10,0,0" TextTrimming="CharacterEllipsis"
+                                   Text="过压上限偏移 · 降低上限只能靠它" ToolTip="给电压策略加一条独立的过压上限：OV 限值 = 1200 + 本偏移。&#10;生效上限 = min(最高电压, OV 限值)，所以只有 OV 限值降到最高电压以下时才起作用。&#10;实测：OV -175 刚好不生效，-176 起开始把上限压下来。&#10;本偏移不能低到让 OV 限值低于「最低电压」，否则会被拒绝。"/>
+                        <Slider x:Name="OvSlider" Minimum="-755" Maximum="80" Value="0"
+                                TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
+                                ValueChanged="OnOvSliderChanged"/>
+                        <Grid Margin="0,2,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" x:Name="OvLabel" Style="{StaticResource Caption}"
+                                       Foreground="{StaticResource TextMuted}" Text="待下发 0 mV"/>
+                            <TextBlock Grid.Column="1" x:Name="OvAllowedLabel" Style="{StaticResource Caption}"
+                                       Text="允许 -755–+80 mV"/>
+                        </Grid>
+                        <TextBlock Text="以下两项与上下限相互独立" Style="{StaticResource Caption}"
+                                   Foreground="{StaticResource TextDim}" Margin="0,12,0,0"/>
+
+                        <!-- Demand offsets: these request a voltage rather than bounding one. -->
+                        <TextBlock Style="{StaticResource RowLabel}" Margin="0,14,0,0" TextTrimming="CharacterEllipsis"
+                                   Text="核心电压偏移 · 直接调请求电压" ToolTip="直接要求核心使用多少电压，与上面的上下限相互独立。&#10;这是 mVolt+ 默认开启的那一项，范围 -25…+50 mV。&#10;上下限是“允许到哪”，这一项是“我要多少”。"/>
+                        <Slider x:Name="VoltSlider" Minimum="-25" Maximum="50" Value="0"
+                                TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
+                                ValueChanged="OnVoltSliderChanged"/>
+                        <Grid Margin="0,2,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" x:Name="VoltOffsetLabel" Style="{StaticResource Caption}"
+                                       Foreground="{StaticResource TextMuted}" Text="待下发 0 mV"/>
+                            <TextBlock Grid.Column="1" x:Name="VoltAllowedLabel" Style="{StaticResource Caption}"
+                                       Text="允许 -25–50 mV"/>
+                        </Grid>
+
+                        <TextBlock Style="{StaticResource RowLabel}" Margin="0,10,0,0" TextTrimming="CharacterEllipsis"
+                                   Text="XBAR 电压偏移 · 总线域请求" ToolTip="总线（XBAR/FABRIC）域的电压需求，与核心分开调整。&#10;范围 -25…+50 mV。"/>
+                        <Slider x:Name="XbarSlider" Minimum="-25" Maximum="50" Value="0"
+                                TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
+                                ValueChanged="OnXbarSliderChanged"/>
+                        <Grid Margin="0,2,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" x:Name="XbarOffsetLabel" Style="{StaticResource Caption}"
+                                       Foreground="{StaticResource TextMuted}" Text="待下发 0 mV"/>
+                            <TextBlock Grid.Column="1" x:Name="XbarAllowedLabel" Style="{StaticResource Caption}"
+                                       Text="允许 -25–50 mV"/>
+                        </Grid>
+
+
+                        <!-- 清零/应用 act on the whole card, so they stay together on the left;
+                             打开 mVolt+ is a way out to another program and sits apart on the
+                             right, where it cannot be hit by mistake while reaching for 应用. -->
+                        <Grid Margin="0,12,0,0">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                                <Button Content="清零" Style="{StaticResource BtnDanger}" Padding="12,7"
+                                        Click="OnVoltReset"/>
+                                <Button Content="应用" Style="{StaticResource BtnPrimary}" MinWidth="64"
+                                        Padding="12,7" Margin="8,0,0,0" Click="OnApplyVoltage"/>
+                            </StackPanel>
+                            <Button Content="打开 mVolt+" Style="{StaticResource BtnGhost}"
+                                    HorizontalAlignment="Right" Click="OnOpenMVoltFull"/>
+                        </Grid>
+                    </StackPanel>
+
+                </Grid>
+            </Border>
+
+            <!-- ===== 频率 ===== -->
+            <Border Grid.Column="2" Style="{StaticResource Card}" Margin="6,0,0,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                <Border Width="3" CornerRadius="2" Margin="0,1,8,1"
+                                        Background="{StaticResource Warn}"/>
+                                <TextBlock Text="频率" Style="{StaticResource SectionTitle}"/>
+                            </StackPanel>
+                            <TextBlock x:Name="ClkRangeHint" Grid.Column="1" Style="{StaticResource BigSub}"
+                                       Foreground="{StaticResource TextDim}" HorizontalAlignment="Right"
+                                       VerticalAlignment="Center" Text="—"/>
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                            <StackPanel Margin="0,0,24,0">
+                                <TextBlock x:Name="ClkNow" Style="{StaticResource BigNumber}"
+                                           Foreground="{StaticResource TextMain}" Text="—"/>
+                                <TextBlock Text="核心频率" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
+                            </StackPanel>
+                            <StackPanel Margin="0,0,24,0">
+                                <TextBlock x:Name="MemNow" Style="{StaticResource BigNumber}"
+                                           Foreground="{StaticResource TextMain}" Text="—"/>
+                                <TextBlock Text="显存时钟" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
+                            </StackPanel>
+                            <StackPanel>
+                                <TextBlock x:Name="UtilNow" Style="{StaticResource BigNumber}"
+                                           Foreground="{StaticResource TextMain}" Text="—"/>
+                                <TextBlock Text="占用率" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <TextBlock Text="偏移（MHz）" Style="{StaticResource RowLabel}" Margin="0,18,0,0"/>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <TextBlock Text="核心" Style="{StaticResource RowLabel}" Width="38"/>
+                            <TextBox x:Name="ClkCore" Style="{StaticResource Input}"/>
+                            <TextBlock x:Name="ClkCoreMinLabel" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Margin="8,0,0,0" Text="—"/>
+                            <TextBlock Text="…" Style="{StaticResource Caption}" VerticalAlignment="Center"
+                                       Margin="3,0,3,0"/>
+                            <TextBlock x:Name="ClkCoreMaxLabel" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Text="—"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <TextBlock Text="显存" Style="{StaticResource RowLabel}" Width="38"/>
+                            <TextBox x:Name="ClkMem" Style="{StaticResource Input}"/>
+                            <TextBlock x:Name="ClkMemMinLabel" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Margin="8,0,0,0" Text="—"/>
+                            <TextBlock Text="…" Style="{StaticResource Caption}" VerticalAlignment="Center"
+                                       Margin="3,0,3,0"/>
+                            <TextBlock x:Name="ClkMemMaxLabel" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Text="—"/>
+                        </StackPanel>
+
+                        <StackPanel x:Name="ClkXbarRow" Orientation="Horizontal" Margin="0,8,0,0">
+                            <TextBlock Text="XBAR" Style="{StaticResource RowLabel}" Width="38"/>
+                            <TextBox x:Name="ClkXbar" Style="{StaticResource Input}"/>
+                            <TextBlock x:Name="ClkXbarMinLabel" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Margin="8,0,0,0" Text="—"/>
+                            <TextBlock Text="…" Style="{StaticResource Caption}" VerticalAlignment="Center"
+                                       Margin="3,0,3,0"/>
+                            <TextBlock x:Name="ClkXbarMaxLabel" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Text="—"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                            <Button Content="应用频率" Style="{StaticResource BtnPrimary}" MinWidth="100"
+                                    Click="OnApplyClocks"/>
+                            <Button Content="重置" Style="{StaticResource BtnDanger}" Margin="0"
+                                    Click="OnResetClocks"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <Border Grid.Row="1" Style="{StaticResource NotePanel}">
+                        <StackPanel>
+                            <TextBlock Text="注意" FontSize="11" FontWeight="SemiBold"
+                                       Foreground="{StaticResource Warn}" Margin="0,0,0,5"/>
+                            <TextBlock Style="{StaticResource CardNote}"
+                                       Text="· 输入框限定了合法范围，超出会拒绝应用，不会下发给驱动。"/>
+                            <TextBlock Style="{StaticResource CardNote}" Margin="0,6,0,0"
+                                       Text="· 显存显示驱动口径的时钟，与 nvidia-smi、MSI Center 一致，不做换算。"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- ===== bottom bar: prerequisites, actions ===== -->
+        <Border Grid.Row="2" Background="{StaticResource Rail}"
+                BorderBrush="{StaticResource CardBorder}" BorderThickness="0,1,0,0" Padding="18,8">
+            <StackPanel>
+                <WrapPanel x:Name="PreHost" Margin="0,0,0,7"/>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock x:Name="ActionHint" Grid.Column="0" VerticalAlignment="Center"
+                               TextWrapping="Wrap" FontSize="11.5"
+                               Foreground="{StaticResource TextDim}"/>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button Content="撤销" Style="{StaticResource Btn}" Click="OnUndo"/>
+                        <Button Content="恢复默认" Style="{StaticResource BtnDanger}" Click="OnRestoreDefaults"/>
+                        <Button Content="配置槽位…" Style="{StaticResource Btn}" Click="OnOpenSlots"/>
+                        <Button Content="一键应用全部" Style="{StaticResource BtnPrimary}" Click="OnApplyAll"/>
+                        <Button x:Name="ServiceButton" Content="安装服务" Style="{StaticResource Btn}"
+                                Margin="0" Click="OnToggleService"/>
+                    </StackPanel>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- ===== pending-confirmation banner ===== -->
+        <Border x:Name="Banner" Grid.Row="3" Background="#3C2C0C"
+                BorderBrush="#8A6D1F" BorderThickness="0,1,0,0" Padding="18,8" Visibility="Collapsed">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="BannerText" Grid.Column="0" Foreground="{StaticResource Warn}"
+                           FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap"
+                           FontSize="12"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Content="确认保留" Style="{StaticResource BtnPrimary}" Click="OnKeepPending"/>
+                    <Button Content="立即回滚" Style="{StaticResource BtnDanger}" Margin="0"
+                            Click="OnRevertPending"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
