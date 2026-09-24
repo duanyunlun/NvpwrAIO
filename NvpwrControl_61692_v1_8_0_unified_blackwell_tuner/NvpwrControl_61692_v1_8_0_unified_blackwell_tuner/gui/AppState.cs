@@ -843,73 +843,53 @@ namespace NvpwrControl
                              "关闭它之后“测试签名”才可能被打开，因为开着的 Secure Boot 会锁住该设置。"
             });
 
-            // Test signing. Absent means off. Toggleable via bcdedit, but only once
-            // Secure Boot is off — the driver here is self-signed, so Windows needs this
-            // flag to load it at all.
-            bool testSigning = BcdHasFlag("testsigning", "Yes") || BcdHasFlag("testsigning", "On");
-            list.Add(new UnlockCheck
-            {
-                Name = "测试签名",
-                Ok = testSigning,
-                Blocking = !testSigning,
-                Detail = testSigning ? "已开启" : "未开启（点击开启）",
-                ActionId = "testsigning",
-                ManualHint = sb == 1
-                    ? "点击开启会执行 bcdedit /set testsigning on，但 Secure Boot 仍开着时该命令会被拒绝。先关 Secure Boot。"
-                    : null
-            });
+            /*
+                Virtualisation-based security, which is the blocker people miss.
 
+                The Windows Security page shows Memory Integrity, and that can read as off while
+                VBS itself is still running — Memory Integrity is only one consumer of it. On the
+                reference machine the page showed 内存完整性: 关 while
+                EnableVirtualizationBasedSecurity was 1 and the hypervisor was live.
+
+                It has to be off. The hypervisor protects kernel memory, and every route to
+                loading this driver ends in a kernel-memory write: the companion tool patches the
+                signature-enforcement variable, and a test-signed driver cannot be loaded at all
+                while code integrity is being enforced.
+
+                The page has no switch for this, so both values are cleared and the hypervisor is
+                told not to start. The registry read cannot see a policy-driven VBS, so the detail
+                line says what was read rather than asserting the machine is clean.
+            */
+            int? vbs = ReadDword(@"SYSTEM\CurrentControlSet\Control\DeviceGuard", "EnableVirtualizationBasedSecurity");
             int? hvci = ReadDword(@"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity", "Enabled");
+            bool vbsOn = vbs == 1 || hvci == 1;
             list.Add(new UnlockCheck
             {
-                Name = "内存完整性",
-                Ok = hvci == 0,
-                Blocking = hvci == 1,
-                Detail = hvci == null ? "未知" : (hvci == 1 ? "已开启（点击关闭）" : "已关闭"),
-                ActionId = "hvci",
-                ManualHint = "位置：Windows 安全中心 → 设备安全性 → 内核隔离 → 内存完整性。"
+                Name = "虚拟化安全",
+                Ok = !vbsOn,
+                Blocking = vbsOn,
+                Detail = vbsOn
+                    ? "已开启（点击关闭）"
+                    : (vbs == null && hvci == null ? "未知" : "已关闭"),
+                ActionId = "vbs",
+                ManualHint = "这一项在 Windows 安全中心里没有开关（内存完整性只是它的一个消费者，关了它 VBS 仍可能运行）。\n" +
+                             "点击会写入 EnableVirtualizationBasedSecurity=0 并执行 bcdedit /set hypervisorlaunchtype off，重启后生效。\n" +
+                             "注意：hypervisorlaunchtype off 会影响 WSL2、Windows 沙盒和部分虚拟化软件。"
             });
 
+            // Vulnerable driver blocklist. Required off for this program because the driver is
+            // loaded through a known-vulnerable signed driver rather than by its own signature;
+            // the blocklist exists precisely to stop that class of driver from running.
             int? block = ReadDword(@"SYSTEM\CurrentControlSet\Control\CI\Config", "VulnerableDriverBlocklistEnable");
             list.Add(new UnlockCheck
             {
-                Name = "驱动黑名单",
+                Name = "驱动阻止列表",
                 Ok = block == 0,
-                Blocking = false,
+                Blocking = block == 1,
                 Detail = block == null ? "未知" : (block == 1 ? "已开启（点击关闭）" : "已关闭"),
                 ActionId = "blocklist",
-                ManualHint = null
+                ManualHint = "位置：Windows 安全中心 → 设备安全性 → 内核隔离 → Microsoft 易受攻击的驱动程序阻止列表。"
             });
-
-            // Certificate trust. Both stores are needed: Root for chain building,
-            // TrustedPublisher so the driver is accepted without a prompt.
-            bool root = HasCert("Root");
-            bool pub = HasCert("TrustedPublisher");
-            list.Add(new UnlockCheck
-            {
-                Name = "测试证书",
-                Ok = root && pub,
-                Blocking = !(root && pub),
-                Detail = (root && pub) ? "已安装到 Root 与 TrustedPublisher"
-                                       : (root ? "仅在 Root" : (pub ? "仅在 TrustedPublisher" : "未安装"))
-            });
-
-            // Driver signature, read from the deployed file rather than assumed.
-            string sys = Path.Combine(Store.Dir, "Nvpwr.sys");
-            if (File.Exists(sys))
-            {
-                string status = "未知";
-                try { status = System.Security.Cryptography.X509Certificates
-                        .X509Certificate.CreateFromSignedFile(sys) != null ? "Valid" : "未知"; }
-                catch { status = "无法读取签名"; }
-                list.Add(new UnlockCheck
-                {
-                    Name = "驱动签名",
-                    Ok = status == "Valid",
-                    Blocking = false,
-                    Detail = status
-                });
-            }
 
             return list;
         }
@@ -946,18 +926,37 @@ namespace NvpwrControl
             {
                 switch (actionId)
                 {
-                    case "hvci":
+                    case "vbs":
                     {
-                        bool on = ReadDword(@"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity", "Enabled") == 1;
-                        using (Microsoft.Win32.RegistryKey k = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(
+                        // Both values and the hypervisor start type, because clearing only the
+                        // registry leaves the hypervisor running and the driver still blocked.
+                        // Memory Integrity is cleared alongside since it cannot run without VBS
+                        // and would only turn it back on.
+                        using (Microsoft.Win32.RegistryKey dg = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(
+                            @"SYSTEM\CurrentControlSet\Control\DeviceGuard"))
+                        {
+                            if (dg == null) { message = "无法打开注册表项 DeviceGuard。"; return false; }
+                            dg.SetValue("EnableVirtualizationBasedSecurity", 0, Microsoft.Win32.RegistryValueKind.DWord);
+                        }
+                        using (Microsoft.Win32.RegistryKey hi = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(
                             @"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity"))
                         {
-                            if (k == null) { message = "无法打开注册表项。"; return false; }
-                            k.SetValue("Enabled", on ? 0 : 1, Microsoft.Win32.RegistryValueKind.DWord);
+                            if (hi == null) { message = "无法打开注册表项 HypervisorEnforcedCodeIntegrity。"; return false; }
+                            hi.SetValue("Enabled", 0, Microsoft.Win32.RegistryValueKind.DWord);
                         }
-                        message = on
-                            ? "内存完整性已关闭。需要重启才会生效。\n\n注意：这会降低系统对恶意内核代码的防护，请自行权衡。"
-                            : "内存完整性已开启。需要重启才会生效。";
+
+                        string output;
+                        int rc = RunBcd("/set hypervisorlaunchtype off", out output);
+                        if (rc != 0)
+                        {
+                            message = "注册表值已写入，但 bcdedit /set hypervisorlaunchtype off 失败（退出码 " + rc + "）。\n\n" +
+                                      (output ?? "") +
+                                      "\n\n只写注册表通常不足以让 hypervisor 停止启动。";
+                            return false;
+                        }
+                        message = "虚拟化安全已关闭（注册表 + hypervisorlaunchtype off）。需要重启才会生效。\n\n" +
+                                  "影响：WSL2、Windows 沙盒、部分虚拟化软件在重启后不可用，直到改回 hypervisorlaunchtype auto。\n" +
+                                  "撤销命令：bcdedit /set hypervisorlaunchtype auto";
                         return true;
                     }
 
@@ -973,26 +972,6 @@ namespace NvpwrControl
                         message = on
                             ? "驱动黑名单已关闭。需要重启才会生效。"
                             : "驱动黑名单已开启。需要重启才会生效。";
-                        return true;
-                    }
-
-                    case "testsigning":
-                    {
-                        bool on = BcdHasFlag("testsigning", "Yes") || BcdHasFlag("testsigning", "On");
-                        // Off by default is the safe direction for a toggle someone may have
-                        // clicked by accident; the message says how to undo either way.
-                        string arg = on ? "/set testsigning off" : "/set testsigning on";
-                        string output;
-                        int rc = RunBcd(arg, out output);
-
-                        if (rc != 0)
-                        {
-                            message = "bcdedit " + arg + " 失败（退出码 " + rc + "）。\n\n" + (output ?? "") +
-                                      "\n\n如果提示受 Secure Boot 策略保护，说明必须先到 BIOS 关闭 Secure Boot。";
-                            return false;
-                        }
-                        message = (on ? "测试签名已关闭。" : "测试签名已开启。") +
-                                  "需要重启才会生效。\n\n撤销命令：bcdedit /set testsigning " + (on ? "on" : "off");
                         return true;
                     }
 
@@ -1036,50 +1015,6 @@ namespace NvpwrControl
                 output = ex.Message;
                 return -1;
             }
-        }
-
-        private static bool HasCert(string store)
-        {
-            try
-            {
-                using (System.Security.Cryptography.X509Certificates.X509Store s =
-                    new System.Security.Cryptography.X509Certificates.X509Store(store,
-                        System.Security.Cryptography.X509Certificates.StoreLocation.LocalMachine))
-                {
-                    s.Open(System.Security.Cryptography.X509Certificates.OpenFlags.ReadOnly);
-                    foreach (System.Security.Cryptography.X509Certificates.X509Certificate2 c in s.Certificates)
-                        if (c.Subject.IndexOf("Nvpwr", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-                    return false;
-                }
-            }
-            catch { return false; }
-        }
-
-        /// <summary>Reads one bcdedit setting. Slow, so it is called at most twice.</summary>
-        private static bool BcdHasFlag(string key, string value)
-        {
-            try
-            {
-                ProcessStartInfo psi = new ProcessStartInfo
-                {
-                    FileName = "bcdedit",
-                    Arguments = "/enum {current}",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    CreateNoWindow = true
-                };
-                using (Process p = Process.Start(psi))
-                {
-                    string output = p.StandardOutput.ReadToEnd();
-                    p.WaitForExit(4000);
-                    foreach (string line in output.Split('\n'))
-                        if (line.IndexOf(key, StringComparison.OrdinalIgnoreCase) >= 0 &&
-                            line.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0)
-                            return true;
-                }
-            }
-            catch { }
-            return false;
         }
     }
 }
