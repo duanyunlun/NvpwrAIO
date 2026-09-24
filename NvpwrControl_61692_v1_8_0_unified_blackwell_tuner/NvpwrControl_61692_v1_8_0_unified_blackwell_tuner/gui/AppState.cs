@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.Eventing.Reader;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -922,6 +923,12 @@ namespace NvpwrControl
             int? vbs = ReadDword(@"SYSTEM\CurrentControlSet\Control\DeviceGuard", "EnableVirtualizationBasedSecurity");
             int? hvci = ReadDword(@"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity", "Enabled");
             bool vbsOn = vbs == 1 || hvci == 1;
+
+            // The firmware can forbid VBS outright. When it does, nothing this program writes
+            // survives a reboot, so the chip is left unclickable rather than pretending to be
+            // a control that silently undoes itself.
+            bool vbsLocked = FirmwareVbsLocked();
+
             list.Add(new UnlockCheck
             {
                 Name = "虚拟化安全",
@@ -930,8 +937,8 @@ namespace NvpwrControl
                 Detail = vbsOn
                     ? "已开启"
                     : (vbs == null && hvci == null ? "未知" : "已关闭"),
-                ActionId = "vbs",
-                ClickAction = vbsOn ? "关闭虚拟化安全" : "恢复虚拟化安全",
+                ActionId = vbsLocked ? null : "vbs",
+                ClickAction = vbsLocked ? "" : (vbsOn ? "关闭虚拟化安全" : "恢复虚拟化安全"),
                 ManualHint = "这一项在 Windows 安全中心里没有开关（内存完整性只是它的一个消费者，关了它 VBS 仍可能运行）。\n" +
                              "点击会写入 EnableVirtualizationBasedSecurity=0 并执行 bcdedit /set hypervisorlaunchtype off，重启后生效。\n" +
                              "注意：hypervisorlaunchtype off 会影响 WSL2、Windows 沙盒和部分虚拟化软件。"
@@ -1112,6 +1119,59 @@ namespace NvpwrControl
             }
             return null;
         }
+        /// <summary>-1 unknown, 0 no, 1 yes. Resolved once; it cannot change while running.</summary>
+        private static int _firmwareVbsLocked = -1;
+
+        /// <summary>
+        /// True when the firmware, rather than Windows, is what keeps VBS off.
+        ///
+        /// Windows records why VBS was or was not started in Kernel-Boot event 153 at every
+        /// boot. Reason 2 is the firmware opt-out variable, and when that is the reason the
+        /// registry value is forced back to zero on each boot no matter what is written.
+        ///
+        /// Measured on the reference machine: a click wrote EnableVirtualizationBasedSecurity = 1
+        /// and reported success, the next boot reset it to 0, and the event for that boot carried
+        /// reason 2. Without this check the 虚拟化安全 chip is a control that silently undoes
+        /// itself — press it, reboot, and it is green again with nothing to explain why.
+        ///
+        /// The reason cannot be read any other way. The UEFI variable holding the opt-out is
+        /// refused from user mode with 1314, reads included.
+        /// </summary>
+        private static bool FirmwareVbsLocked()
+        {
+            if (_firmwareVbsLocked >= 0) return _firmwareVbsLocked == 1;
+
+            bool locked = false;
+            try
+            {
+                const string selector =
+                    "*[System[Provider[@Name='Microsoft-Windows-Kernel-Boot'] and (EventID=153)]]";
+                EventLogQuery query = new EventLogQuery("System", PathType.LogName, selector);
+                query.TolerateQueryErrors = true;
+                using (EventLogReader reader = new EventLogReader(query))
+                {
+                    // ReadEvent walks forwards from wherever the reader sits, so seeking to the
+                    // end first gives the most recent boot rather than the oldest on record.
+                    reader.Seek(SeekOrigin.End, 0);
+                    EventRecord record = reader.ReadEvent();
+                    if (record != null)
+                    {
+                        Match m = Regex.Match(record.ToXml(), "EnableDisableReason[^>]*>(\\d+)<");
+                        if (m.Success) locked = m.Groups[1].Value == "2";
+                    }
+                }
+            }
+            catch
+            {
+                // An unreadable log leaves the chip behaving normally, which is the safe
+                // direction: it stays clickable and the user decides.
+            }
+
+            _firmwareVbsLocked = locked ? 1 : 0;
+            Store.Log("VBS 固件锁定检测: " + (locked ? "是（固件禁用了 VBS，注册表改动重启后被重置）" : "否"));
+            return locked;
+        }
+
 
         public static bool Toggle(string actionId, out string message)
         {

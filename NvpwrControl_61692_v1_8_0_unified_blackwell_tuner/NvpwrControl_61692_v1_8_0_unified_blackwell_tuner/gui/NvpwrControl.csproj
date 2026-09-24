@@ -60,6 +60,16 @@
       deployment failures that come with forgetting to ship it.
     -->
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="6.0.0" />
+    <!--
+      EventLogQuery / EventLogReader. Used for one thing: asking the kernel why VBS is off.
+
+      Windows records the reason in Kernel-Boot event 153 at every boot, and one of those
+      reasons means the firmware has opted out — in which case the registry value is forced
+      back to zero on every boot and the 虚拟化安全 chip would be a control that silently
+      undoes itself. The reason cannot be read any other way: the UEFI variable itself is
+      refused from user mode with 1314.
+    -->
+    <PackageReference Include="System.Diagnostics.EventLog" Version="6.0.0" />
   </ItemGroup>
 
 </Project>
