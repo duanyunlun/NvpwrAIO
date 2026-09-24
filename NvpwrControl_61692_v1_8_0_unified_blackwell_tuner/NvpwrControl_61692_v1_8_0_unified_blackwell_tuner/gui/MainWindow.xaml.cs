@@ -282,17 +282,30 @@ namespace NvpwrControl
 
 		private void OnPrerequisiteClick(UnlockCheck c)
 		{
-			string text = (c.Ok ? "关闭" : "开启");
-			if (Confirm("要" + text + "「" + c.Name + "」吗？\r\n\r\n" + c.Detail + "\r\n\r\n这项改动需要重启才会生效。" + ((c.Name == "内存完整性" || c.Name == "驱动黑名单") ? "\r\n\r\n注意：关闭它是为了加载本程序的自签名内核驱动，会降低系统对恶意内核代码的防护。" : "")))
+			/*
+				These chips are toggles, so the direction depends on what is there now and the
+				confirmation has to say which way it is going. A single pair of verbs derived from
+				Ok does not work, because the chips do not all mean the same thing by Ok: for most
+				of them it means the setting is already where the driver needs it and the click
+				turns it off, but for the CI policies it means the files are gone and the click
+				puts them back.
+			*/
+			string action = string.IsNullOrEmpty(c.ClickAction) ? c.Name : c.ClickAction;
+			string caution = string.IsNullOrEmpty(c.ActionId)
+				? ""
+				: "\r\n\r\n注意：这些改动是为了让本程序的自签名内核驱动能够加载，会降低系统对恶意内核代码的防护。" +
+				  "再点一次这一项可以改回去。";
+
+			if (Confirm("要" + action + "吗？\r\n\r\n" + c.Detail + "\r\n\r\n这项改动需要重启才会生效。" + caution))
 			{
 				if (UnlockDiagnostics.Toggle(c.ActionId, out var message))
 				{
-					Store.Log("前提项已切换: " + c.Name + " → " + text);
+					Store.Log("前提项已切换: " + action);
 					Info(message);
 				}
 				else
 				{
-					Store.Log("前提项切换失败: " + c.Name + " — " + message);
+					Store.Log("前提项切换失败: " + action + " — " + message);
 					Warn(message);
 				}
 				RefreshPrerequisites();

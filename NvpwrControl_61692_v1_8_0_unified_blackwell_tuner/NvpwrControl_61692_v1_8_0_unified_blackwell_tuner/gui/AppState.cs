@@ -820,6 +820,16 @@ namespace NvpwrControl
         /// be changed from here (Secure Boot, which is firmware).
         /// </summary>
         public string ActionId;
+
+        /// <summary>
+        /// What clicking will do, phrased for the current state.
+        ///
+        /// Per-chip rather than a single "close/open" pair derived from Ok, because the chips do
+        /// not all mean the same thing by Ok. For most of them Ok means the setting is already
+        /// where the driver needs it, and clicking turns it off. For the CI policies Ok means the
+        /// files have been cleared, and clicking puts them back.
+        /// </summary>
+        public string ClickAction;
         /// <summary>Why it cannot be toggled, shown when ActionId is null.</summary>
         public string ManualHint;
     }
@@ -888,6 +898,7 @@ namespace NvpwrControl
                     ? "已开启（点击关闭）"
                     : (vbs == null && hvci == null ? "未知" : "已关闭"),
                 ActionId = "vbs",
+                ClickAction = vbsOn ? "关闭虚拟化安全" : "恢复虚拟化安全",
                 ManualHint = "这一项在 Windows 安全中心里没有开关（内存完整性只是它的一个消费者，关了它 VBS 仍可能运行）。\n" +
                              "点击会写入 EnableVirtualizationBasedSecurity=0 并执行 bcdedit /set hypervisorlaunchtype off，重启后生效。\n" +
                              "注意：hypervisorlaunchtype off 会影响 WSL2、Windows 沙盒和部分虚拟化软件。"
@@ -904,6 +915,7 @@ namespace NvpwrControl
                 Blocking = block == 1,
                 Detail = block == null ? "未知" : (block == 1 ? "已开启（点击关闭）" : "已关闭"),
                 ActionId = "blocklist",
+                ClickAction = block == 1 ? "关闭驱动阻止列表" : "开启驱动阻止列表",
                 ManualHint = "位置：Windows 安全中心 → 设备安全性 → 内核隔离 → Microsoft 易受攻击的驱动程序阻止列表。"
             });
 
@@ -944,6 +956,7 @@ namespace NvpwrControl
                 Blocking = present.Count > 0,
                 Detail = present.Count == 0 ? "已清除" : ("还有 " + present.Count + " 个策略文件（点击清除）"),
                 ActionId = "cipolicy",
+                ClickAction = present.Count == 0 ? "恢复 CI 策略文件" : "清除 CI 策略文件",
                 ManualHint = "已签名的 WDAC 策略独立于注册表开关生效。清除会先备份到程序数据目录，可还原。\n" +
                              "这些文件受保护，操作需要管理员权限；Secure Boot 必须已关闭，否则策略会被重新应用。"
             });
@@ -997,6 +1010,97 @@ namespace NvpwrControl
         /// The registry values are written under HKLM and therefore require the elevated
         /// session the app already runs in.
         /// </summary>
+        /// <summary>
+        /// Where the pre-change values of the toggleable prerequisites are kept.
+        ///
+        /// These chips toggle, so switching one back has to restore what was actually there
+        /// rather than a value guessed at the time. HVCI forces the issue: it is on for some
+        /// machines and off for others, and once written nothing in the registry says which it
+        /// was. Turning it back on for someone who never had it on is a change they did not ask
+        /// for.
+        /// </summary>
+        private static string PrereqRecordPath
+        {
+            get { return System.IO.Path.Combine(Store.Dir, "prereq-original.ini"); }
+        }
+
+        /// <summary>
+        /// Records a value the first time a setting is changed, and never again.
+        ///
+        /// Write-once is the point. A second toggle would otherwise record the value this
+        /// program itself wrote, and the real original would be lost — the same way the factory
+        /// power wall was lost before it was made to persist.
+        /// </summary>
+        private static void Remember(string key, string value)
+        {
+            try
+            {
+                string path = PrereqRecordPath;
+                List<string> lines = File.Exists(path)
+                    ? new List<string>(File.ReadAllLines(path, Encoding.UTF8))
+                    : new List<string>();
+                string prefix = key + "=";
+                foreach (string line in lines)
+                {
+                    if (line.StartsWith(prefix, StringComparison.Ordinal)) return;
+                }
+                lines.Add(prefix + value);
+                File.WriteAllLines(path, lines, new UTF8Encoding(false));
+            }
+            catch
+            {
+                // Best effort. A missing record only means the fallback default is used.
+            }
+        }
+
+        /// <summary>Reads a recorded original, or null when nothing was recorded.</summary>
+        private static string Recall(string key)
+        {
+            try
+            {
+                string path = PrereqRecordPath;
+                if (!File.Exists(path)) return null;
+                string prefix = key + "=";
+                foreach (string line in File.ReadAllLines(path, Encoding.UTF8))
+                {
+                    if (line.StartsWith(prefix, StringComparison.Ordinal))
+                    {
+                        return line.Substring(prefix.Length);
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static int RecallInt(string key, int fallback)
+        {
+            string v = Recall(key);
+            int parsed;
+            return (v != null && int.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed))
+                ? parsed : fallback;
+        }
+
+        /// <summary>
+        /// Reads the current hypervisor launch type from the boot configuration.
+        ///
+        /// Needed for the same reason as the registry values: turning VBS back on has to restore
+        /// the launch type that was in effect, and "auto" is only right if that is what it was.
+        /// </summary>
+        private static string ReadHypervisorLaunchType()
+        {
+            string output;
+            if (RunBcd("/enum {current}", out output) != 0 || output == null) return null;
+            foreach (string raw in output.Split('\n'))
+            {
+                string line = raw.Trim();
+                if (!line.StartsWith("hypervisorlaunchtype", StringComparison.OrdinalIgnoreCase)) continue;
+                string[] parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2) return parts[1];
+            }
+            return null;
+        }
+
         public static bool Toggle(string actionId, out string message)
         {
             message = null;
@@ -1006,35 +1110,76 @@ namespace NvpwrControl
                 {
                     case "vbs":
                     {
-                        // Both values and the hypervisor start type, because clearing only the
-                        // registry leaves the hypervisor running and the driver still blocked.
-                        // Memory Integrity is cleared alongside since it cannot run without VBS
-                        // and would only turn it back on.
+                        /*
+                            A real toggle, in both directions.
+
+                            It used to write zeros unconditionally, so the chip could turn VBS off
+                            and then never turn it back on — pressing it again just wrote the same
+                            zeros and reported success, which reads as "nothing happened".
+
+                            Both values and the hypervisor start type move together, because
+                            clearing only the registry leaves the hypervisor running and the driver
+                            still blocked. Memory Integrity moves too: it cannot run without VBS,
+                            so leaving it set would only turn VBS back on.
+                        */
+                        string output;
+                        bool currentlyOff =
+                            ReadDword(@"SYSTEM\CurrentControlSet\Control\DeviceGuard",
+                                      "EnableVirtualizationBasedSecurity") == 0;
+
+                        if (!currentlyOff)
+                        {
+                            // Record before changing, so a later toggle restores what was there.
+                            Remember("vbs_enabled",
+                                (ReadDword(@"SYSTEM\CurrentControlSet\Control\DeviceGuard",
+                                           "EnableVirtualizationBasedSecurity") ?? 1)
+                                .ToString(CultureInfo.InvariantCulture));
+                            Remember("hvci_enabled",
+                                (ReadDword(@"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity",
+                                           "Enabled") ?? 1)
+                                .ToString(CultureInfo.InvariantCulture));
+                            string launch = ReadHypervisorLaunchType();
+                            if (launch != null) Remember("hypervisorlaunch", launch);
+                        }
+
                         using (Microsoft.Win32.RegistryKey dg = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(
                             @"SYSTEM\CurrentControlSet\Control\DeviceGuard"))
                         {
                             if (dg == null) { message = "无法打开注册表项 DeviceGuard。"; return false; }
-                            dg.SetValue("EnableVirtualizationBasedSecurity", 0, Microsoft.Win32.RegistryValueKind.DWord);
+                            dg.SetValue("EnableVirtualizationBasedSecurity", currentlyOff ? 1 : 0,
+                                        Microsoft.Win32.RegistryValueKind.DWord);
                         }
                         using (Microsoft.Win32.RegistryKey hi = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(
                             @"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity"))
                         {
                             if (hi == null) { message = "无法打开注册表项 HypervisorEnforcedCodeIntegrity。"; return false; }
-                            hi.SetValue("Enabled", 0, Microsoft.Win32.RegistryValueKind.DWord);
+                            hi.SetValue("Enabled", currentlyOff ? RecallInt("hvci_enabled", 1) : 0,
+                                        Microsoft.Win32.RegistryValueKind.DWord);
                         }
 
-                        string output;
-                        int rc = RunBcd("/set hypervisorlaunchtype off", out output);
+                        // Where nothing was recorded, "auto" is the Windows default and the value
+                        // the reference instructions tell people to restore by hand.
+                        string wantLaunch = currentlyOff ? (Recall("hypervisorlaunch") ?? "auto") : "off";
+                        int rc = RunBcd("/set hypervisorlaunchtype " + wantLaunch, out output);
                         if (rc != 0)
                         {
-                            message = "注册表值已写入，但 bcdedit /set hypervisorlaunchtype off 失败（退出码 " + rc + "）。\n\n" +
-                                      (output ?? "") +
+                            message = "注册表值已写入，但 bcdedit /set hypervisorlaunchtype " + wantLaunch +
+                                      " 失败（退出码 " + rc + "）。\n\n" + (output ?? "") +
                                       "\n\n只写注册表通常不足以让 hypervisor 停止启动。";
                             return false;
                         }
-                        message = "虚拟化安全已关闭（注册表 + hypervisorlaunchtype off）。需要重启才会生效。\n\n" +
-                                  "影响：WSL2、Windows 沙盒、部分虚拟化软件在重启后不可用，直到改回 hypervisorlaunchtype auto。\n" +
-                                  "撤销命令：bcdedit /set hypervisorlaunchtype auto";
+
+                        if (currentlyOff)
+                        {
+                            message = "虚拟化安全已恢复开启（注册表 + hypervisorlaunchtype " + wantLaunch +
+                                      "）。需要重启才会生效。";
+                        }
+                        else
+                        {
+                            message = "虚拟化安全已关闭（注册表 + hypervisorlaunchtype off）。需要重启才会生效。\n\n" +
+                                      "影响：WSL2、Windows 沙盒、部分虚拟化软件在重启后不可用。\n" +
+                                      "再点一次这一项可以改回去。";
+                        }
                         return true;
                     }
 
@@ -1054,7 +1199,7 @@ namespace NvpwrControl
                     }
 
                     case "cipolicy":
-                        return ClearCodeIntegrityPolicies(out message);
+                        return ToggleCodeIntegrityPolicies(out message);
 
                     default:
                         message = "这一项无法由程序修改。";
@@ -1069,6 +1214,93 @@ namespace NvpwrControl
         }
 
         /// <summary>
+        /// Clears the policies when they are present, restores them when they are not.
+        ///
+        /// A toggle rather than a one-way action. Clearing used to be all this could do, so the
+        /// chip read as a dead control once the files were gone: pressing it again found nothing
+        /// to remove and reported that, which looks like a failure and leaves no way back short
+        /// of copying files by hand.
+        ///
+        /// Which direction to go is decided from the files themselves, not from the chip's
+        /// displayed state, because the two can disagree — the chip is refreshed on a timer, and
+        /// the files can be put back by a Windows update in between.
+        /// </summary>
+        private static bool ToggleCodeIntegrityPolicies(out string message)
+        {
+            string[] ids =
+            {
+                "{784C4414-79F4-4C32-A6A5-F0FB42A51D0D}",
+                "{8F9CB695-5D48-48D6-A329-7202B44607E3}"
+            };
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                "System32", "CodeIntegrity", "CiPolicies", "Active");
+            string backup = Path.Combine(Store.Dir, "CiPolicyBackup");
+
+            bool anyPresent = false;
+            foreach (string id in ids)
+            {
+                if (File.Exists(Path.Combine(dir, id + ".cip"))) { anyPresent = true; break; }
+            }
+
+            if (anyPresent)
+            {
+                return ClearCodeIntegrityPolicies(out message);
+            }
+            return RestoreCodeIntegrityPolicies(ids, dir, backup, out message);
+        }
+
+        /// <summary>
+        /// Puts the backed-up policies back.
+        ///
+        /// Restoring matters beyond convenience: these files are what the blocklist switch is
+        /// backed up by, so a machine that has had them removed is running with one layer of
+        /// protection gone. Someone who is done with this tool should be able to put the machine
+        /// back the way they found it without hunting for the files.
+        /// </summary>
+        private static bool RestoreCodeIntegrityPolicies(string[] ids, string dir, string backup, out string message)
+        {
+            message = null;
+            List<string> restored = new List<string>();
+            List<string> missing = new List<string>();
+            List<string> failed = new List<string>();
+
+            foreach (string id in ids)
+            {
+                string src = Path.Combine(backup, id + ".cip");
+                string dst = Path.Combine(dir, id + ".cip");
+                if (!File.Exists(src)) { missing.Add(id); continue; }
+                try
+                {
+                    File.Copy(src, dst, true);
+                    restored.Add(id);
+                }
+                catch (Exception ex)
+                {
+                    failed.Add(id + "：" + ex.Message);
+                }
+            }
+
+            if (restored.Count == 0 && missing.Count == ids.Length)
+            {
+                message = "没有找到可恢复的备份，也没有策略文件存在。\n\n备份目录：" + backup;
+                return false;
+            }
+            if (failed.Count > 0)
+            {
+                message = "部分策略文件恢复失败：\n\n" + string.Join("\n", failed);
+                return false;
+            }
+            message = "已恢复 " + restored.Count + " 个 CI 策略文件，来自：\n" + backup +
+                      "\n\n需要重启才会生效。";
+            if (missing.Count > 0)
+            {
+                message += "\n\n另有 " + missing.Count + " 个没有备份，无法恢复（本机原本就没有）。";
+            }
+            return true;
+        }
+
+        /// <summary>
         /// Removes the signed WDAC code-integrity policies that duplicate the blocklist switch.
         ///
         /// They are deleted rather than disabled because there is no supported way to disable
@@ -1077,13 +1309,13 @@ namespace NvpwrControl
         /// is re-applied from the firmware side and the deletion does not stick.
         ///
         /// Everything removed is copied to the program data directory first, so this is
-        /// reversible even though the originals live in protected locations. The files are
-        /// owned by TrustedInstaller, so ownership is taken before deleting — the same dance the
+        /// reversible even though the originals live in protected locations. The files are owned
+        /// by TrustedInstaller, so ownership is taken before deleting — the same dance the
         /// reference tooling does.
         ///
-        /// The EFI partition is not touched here. Reading it requires mounting it, and the
-        /// observed machines keep these policies in the Windows directory; the app reports what
-        /// it finds rather than mounting system partitions behind the user's back.
+        /// The EFI partition is not touched. Reading it requires mounting it, and the observed
+        /// machines keep these policies in the Windows directory; the app reports what it finds
+        /// rather than mounting system partitions behind the user's back.
         /// </summary>
         private static bool ClearCodeIntegrityPolicies(out string message)
         {
