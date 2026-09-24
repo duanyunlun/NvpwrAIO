@@ -224,17 +224,27 @@ namespace NvpwrControl
                     }
                 }
 
-                // The device comes back asynchronously; give NVML a moment to see the new stack.
-                for (int i = 0; i < 20; i++)
-                {
-                    if (CurrentWallW() > 0)
-                    {
-                        return true;
-                    }
-                    System.Threading.Thread.Sleep(500);
-                }
-                error = "显卡设备已重启，但功耗墙读数仍未恢复";
-                return false;
+                /*
+                    Wait on the clock, and let go of NVML either side of the restart.
+
+                    This used to poll CurrentWallW() up to twenty times, which is an NVML call, and
+                    that is what killed the process. Immediately after Enable-PnpDevice, NVML still
+                    answers for the device that was just removed: nvmlDeviceGetHandleByIndex returns
+                    success and a handle into freed state, and the next nvmlDeviceGetPowerUsage on it
+                    is an access violation. The dump is unambiguous — IL_STUB_PInvoke(IntPtr, UInt32
+                    ByRef) under SampleNvml under CurrentWallW under this method — and it explains
+                    the pattern exactly: a first change from the factory value needs no restart and
+                    survived, while any second change needed one and died.
+
+                    nvmlShutdown before the device goes away tells NVML to release it; a second call
+                    after the script returns clears whatever it cached and makes the next sample
+                    initialise against the new device. The script already sleeps five seconds around
+                    the enable, so the extra wait here is only a margin.
+                */
+                Telemetry.ResetNvml();
+                System.Threading.Thread.Sleep(3000);
+                Telemetry.ResetNvml();
+                return true;
             }
             catch (Exception ex)
             {

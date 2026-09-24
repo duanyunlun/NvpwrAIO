@@ -456,14 +456,33 @@ namespace NvpwrControl
 				_refreshTimer.Stop();
 			}
 
-			// The helper was loaded for this session only. Unloading it here leaves the machine
-			// with no self-signed driver resident while the power ceiling stays where it was set
-			// — the value lives in NVIDIA's own state, not ours. DSE is already back on: it is
-			// restored the moment the service reports RUNNING, not held off for the session.
+			/*
+				The helper is unloaded only when nothing else is holding it.
+
+				With the service installed, the helper belongs to the service: it loads it at boot,
+				while the ceiling is still at the factory value, and keeps it there. Unloading it on
+				exit takes that away and costs the next session a display device restart, because a
+				helper only loads against a factory baseline and the rail is no longer at one.
+
+				That restart is the step that crashed — see the note in GpuDevice.Restart — and it is
+				avoidable whenever the service is present. Without the service the driver is this
+				session's to load and unload, and the restart is the price of a second change.
+
+				Leaving it resident costs nothing: the value lives in NVIDIA's own state rather than
+				ours, and DSE is already back on by this point — it is restored the moment the driver
+				service reports RUNNING, not held off for the session.
+			*/
 			if (Driver.IsOpenable())
 			{
-				UnlockChain.Unload();
-				Store.Log("已卸载内核驱动，功耗设置保持到重启");
+				if (Service.IsInstalled())
+				{
+					Store.Log("内核驱动由后台服务持有，退出时保留");
+				}
+				else
+				{
+					UnlockChain.Unload();
+					Store.Log("已卸载内核驱动，功耗设置保持到重启");
+				}
 			}
 
 			Store.Log("NvpwrControl 退出");

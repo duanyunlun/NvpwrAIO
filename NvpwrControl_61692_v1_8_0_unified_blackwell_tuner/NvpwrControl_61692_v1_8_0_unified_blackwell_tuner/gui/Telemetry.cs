@@ -102,6 +102,40 @@ namespace NvpwrControl
             return (T)(object)Marshal.GetDelegateForFunctionPointer(p, typeof(T));
         }
 
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int ShutdownFn();
+
+        /// <summary>
+        /// Makes NVML forget the devices it knows about, so the next sample initialises against
+        /// whatever is actually there.
+        ///
+        /// Needed around a display device restart. NVML keeps its own list of device objects and
+        /// does not notice a card being removed and re-added underneath it: nvmlDeviceGetHandleByIndex
+        /// keeps returning success, and the handle it hands back points into state that has been
+        /// freed. Calling nvmlDeviceGetPowerUsage on one is an access violation, not an error code
+        /// — measured, and the crash dump names it exactly (IL_STUB_PInvoke(IntPtr, UInt32 ByRef)
+        /// under SampleNvml).
+        ///
+        /// nvmlShutdown is safe to call when nothing is initialised; the module itself is left
+        /// loaded and simply re-opened on the next sample, which only bumps a refcount.
+        /// </summary>
+        public static void ResetNvml()
+        {
+            if (_nvml != IntPtr.Zero)
+            {
+                try
+                {
+                    ShutdownFn shutdown = Fn<ShutdownFn>("nvmlShutdown");
+                    if (shutdown != null) shutdown();
+                }
+                catch
+                {
+                    // Best effort. Even a failed shutdown is followed by a fresh init.
+                }
+            }
+            _nvml = IntPtr.Zero;
+            _nvmlTried = false;
+        }
+
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int InitFn();
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int CountFn(out uint count);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int HandleFn(uint index, out IntPtr device);
