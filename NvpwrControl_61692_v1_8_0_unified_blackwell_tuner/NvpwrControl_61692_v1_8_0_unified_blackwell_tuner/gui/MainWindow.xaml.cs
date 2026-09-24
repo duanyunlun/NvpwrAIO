@@ -701,14 +701,33 @@ namespace NvpwrControl
 			return true;
 		}
 
+		/// <summary>
+		/// Writes the pending offsets into the controls.
+		///
+		/// Only for an explicit load — a slot, an undo, a reset. This is deliberately not called
+		/// from the one-second refresh: pushing pending values back into the sliders there made the
+		/// refresh fight the user, because with the ceiling routed to OV the REL value is zero and
+		/// the tick would set the maximum slider to 1025, whose handler then cleared the OV offset.
+		/// An edit survived about a second.
+		///
+		/// The maximum is written from the ceiling rather than from REL, since the ceiling is what
+		/// that control represents; REL alone would show the baseline whenever OV is doing the work.
+		/// </summary>
 		private void UpdateVoltOffsetLabel()
 		{
 			SetSlider(VoltSlider, VoltOffsetLabel, _voltOffsetMv);
 			SetSlider(XbarSlider, XbarOffsetLabel, _xbarOffsetMv);
-			SetSlider(OvSlider, null, _ovOffsetMv);
-			UpdateOvLabels();
+			SetSliderQuiet(OvSlider, _ovOffsetMv);
+
 			SetSlider(MinVoltSlider, MinVoltLabel, _baseMinMv + _vminOffsetMv);
-			SetSlider(MaxVoltSlider, MaxVoltLabel, _baseMaxMv + _relOffsetMv);
+			int ceiling = Math.Min(_baseMaxMv + _relOffsetMv, OV_BASE_MV + _ovOffsetMv);
+			SetSliderQuiet(MaxVoltSlider, ceiling);
+			if (MaxVoltLabel != null)
+			{
+				MaxVoltLabel.Text = ceiling + " mV";
+			}
+
+			UpdateOvLabels();
 			ClampMinSlider();
 			UpdateOffsetSummary();
 		}
@@ -760,23 +779,35 @@ namespace NvpwrControl
 		}
 
 		/// <summary>
-		/// The maximum, as a voltage the user picks, routed to whichever offset can produce it.
+		/// Set while one handler writes into the other's slider. WPF raises ValueChanged for a
+		/// programmatic assignment just as it does for a drag, so without this the two controls
+		/// would call each other and overwrite the values they had just been given.
+		/// </summary>
+		private bool _syncingVoltControls;
+
+		/// <summary>
+		/// The maximum ceiling, as a voltage the user picks, routed to whichever offset can
+		/// produce it.
 		///
 		/// REL accepts only 0…+125 on this rail (1025…1150 mV) and the tool refuses negative
 		/// values with "within the application bounds", so REL alone cannot lower the ceiling —
-		/// which is why setting 1000 mV came back as "mVolt+ 未保留 NVDD 偏移（请求 rel=-25 mV,
-		/// 回读 rel=0 mV）". OV can lower it, and does: its ceiling sits at 1200 mV and pulling it
-		/// down caps the effective maximum once it passes below the REL limit. The companion tool
-		/// reaches its 445-1150 range the same way.
+		/// which is why setting 1000 mV first came back as "mVolt+ 未保留 NVDD 偏移（请求
+		/// rel=-25 mV，回读 rel=0 mV）". OV can lower it, and does: its ceiling sits at 1200 mV
+		/// and pulling it down caps the effective maximum once it passes below the REL limit. The
+		/// companion tool reaches its 445-1150 range the same way.
 		///
 		/// ALT/OP is always left at zero. This rail driver reports no operating limit for it and
 		/// the tool rejects any non-zero request outright with "The driver does not report an
 		/// operating limit (ALT/OP) for this rail." Copying the REL value into it, which this
 		/// method used to do, made every apply fail.
+		///
+		/// This is the master control for the ceiling. The OV slider below is linked to it rather
+		/// than independent: both describe the same ceiling, so whichever is moved has to move the
+		/// other, or they would sit there disagreeing about a value they both claim to set.
 		/// </summary>
 		private void OnMaxVoltSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
 		{
-			if (MaxVoltLabel == null)
+			if (MaxVoltLabel == null || _syncingVoltControls)
 			{
 				return;
 			}
@@ -793,10 +824,33 @@ namespace NvpwrControl
 				_ovOffsetMv = num - OV_BASE_MV;
 			}
 			MaxVoltLabel.Text = num + " mV";
-			SetSlider(OvSlider, null, _ovOffsetMv);
+			SetSliderQuiet(OvSlider, _ovOffsetMv);
 			UpdateOvLabels();
 			UpdateOffsetSummary();
 			ClampMinSlider();
+		}
+
+		/// <summary>
+		/// Moves a slider without re-entering its handler.
+		///
+		/// Assigning Value raises ValueChanged exactly as a drag does, so the linked controls have
+		/// to be written through here or each would undo the other.
+		/// </summary>
+		private void SetSliderQuiet(Slider slider, int value)
+		{
+			if (slider == null || Math.Abs(slider.Value - (double)value) < 0.001)
+			{
+				return;
+			}
+			_syncingVoltControls = true;
+			try
+			{
+				slider.Value = value;
+			}
+			finally
+			{
+				_syncingVoltControls = false;
+			}
 		}
 
 		/// <summary>
@@ -846,9 +900,27 @@ namespace NvpwrControl
 			}
 		}
 
+		/// <summary>
+		/// The OV slider, linked to the maximum above rather than independent of it.
+		///
+		/// Both controls describe the same ceiling, so dragging this one has to move that one too.
+		/// Leaving them independent was the confusing part: moving 最高电压 to 1000 wrote OV -200
+		/// and the OV slider followed, but dragging OV afterwards left 最高电压 claiming a ceiling
+		/// that was no longer in force. REL is not touched here — the ceiling is simply whatever
+		/// the tighter of the two limits yields.
+		/// </summary>
 		private void OnOvSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
 		{
+			if (OvLabel == null || _syncingVoltControls)
+			{
+				return;
+			}
 			_ovOffsetMv = (int)Math.Round(e.NewValue);
+
+			int num = Math.Min(_baseMaxMv + _relOffsetMv, OV_BASE_MV + _ovOffsetMv);
+			SetSliderQuiet(MaxVoltSlider, num);
+			MaxVoltLabel.Text = num + " mV";
+
 			UpdateOvLabels();
 			UpdateOffsetSummary();
 			ClampMinSlider();
@@ -889,8 +961,26 @@ namespace NvpwrControl
 				}
 				return;
 			}
-			string text = "VMIN   限值偏移 " + Signed(_vminOffsetMv) + "\nREL    限值偏移 " + Signed(_relOffsetMv) + "\nALT/OP 限值偏移 " + Signed(_altOffsetMv) + "\nOV     限值偏移 " + Signed(_ovOffsetMv) + "\n核心   需求偏移 " + Signed(_voltOffsetMv) + "\nXBAR   需求偏移 " + Signed(_xbarOffsetMv);
-			if (!Confirm("确认下发以下电压偏移？\r\n\r\n" + text + "\r\n\r\n电压修改可能导致显卡不稳定、驱动重置，极端情况会损坏供电轨。驱动接受了数值不等于稳定。"))
+			/*
+				Every line is short and every line break is an explicit CRLF.
+
+				The Win32 message box does not wrap long text, so the single-sentence warning that
+				used to end this message stretched the dialog past the edge of the window and its
+				buttons were cut off at 200% scaling. The offsets were also joined with a bare LF,
+				which the control does not treat as a line break — it needs CRLF.
+			*/
+			string text =
+				"VMIN   限值偏移 " + Signed(_vminOffsetMv) + "\r\n" +
+				"REL    限值偏移 " + Signed(_relOffsetMv) + "\r\n" +
+				"ALT/OP 限值偏移 " + Signed(_altOffsetMv) + "\r\n" +
+				"OV     限值偏移 " + Signed(_ovOffsetMv) + "\r\n" +
+				"核心   需求偏移 " + Signed(_voltOffsetMv) + "\r\n" +
+				"XBAR   需求偏移 " + Signed(_xbarOffsetMv);
+			string warning =
+				"电压修改可能导致显卡不稳定、驱动重置，\r\n" +
+				"极端情况会损坏供电轨。\r\n" +
+				"驱动接受了数值不等于稳定。";
+			if (!Confirm("确认下发以下电压偏移？\r\n\r\n" + text + "\r\n\r\n" + warning))
 			{
 				return;
 			}
