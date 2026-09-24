@@ -51,13 +51,20 @@ Write-Host "`n=== 2. 组装输出目录 ===" -ForegroundColor Cyan
 if (Test-Path $OutDir) { Remove-Item $OutDir -Recurse -Force }
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 
-# --- 主程序 ---
-foreach ($f in @('NvpwrControl.exe','NvpwrControl.dll','NvpwrControl.deps.json','NvpwrControl.runtimeconfig.json')) {
-    $src = Join-Path $gui "publish\$f"
-    if (-not (Test-Path $src)) { Fail "缺少主程序文件: $src" }
-    Copy-Item $src $OutDir -Force
+# --- 主程序：publish 目录的全部内容 ---
+#
+# Copied wholesale rather than as a list of four named files. The list missed the NuGet
+# dependencies the app needs at startup (System.ServiceProcess.ServiceController and the
+# EventLog messages assembly), which produced a package that installed cleanly and then failed
+# to launch. Whatever publish emits is what the app needs.
+$publish = Join-Path $gui 'publish'
+if (-not (Test-Path $publish)) { Fail "缺少 publish 目录，先构建: $publish" }
+$mainCount = 0
+foreach ($f in Get-ChildItem $publish -File) {
+    Copy-Item $f.FullName $OutDir -Force
+    $mainCount++
 }
-Step "主程序 4 个文件"
+Step "主程序 $mainCount 个文件（publish 全部内容）"
 
 # --- 随包组件 ---
 $components = @(
