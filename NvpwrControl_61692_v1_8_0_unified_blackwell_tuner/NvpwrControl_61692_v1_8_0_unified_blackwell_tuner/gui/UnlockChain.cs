@@ -30,7 +30,30 @@ namespace NvpwrControl
         /// </summary>
         public static string ExePath
         {
-            get { return Path.Combine(Service.ExePath, "EfiDSEFix.exe"); }
+            get { return Path.Combine(AppDir, "EfiDSEFix.exe"); }
+        }
+
+        /// <summary>
+        /// The directory this program runs from.
+        ///
+        /// Service.ExePath is the full path of the executable, filename included, so combining it
+        /// with a filename yields a path underneath a file. That mistake was made here, and it
+        /// surfaced as "找不到 EfiDSEFix.exe" while the file was sitting beside the program.
+        /// </summary>
+        internal static string AppDir
+        {
+            get
+            {
+                try
+                {
+                    string dir = Path.GetDirectoryName(Service.ExePath);
+                    return string.IsNullOrEmpty(dir) ? "." : dir;
+                }
+                catch
+                {
+                    return ".";
+                }
+            }
         }
 
         public static bool IsAvailable()
@@ -376,7 +399,7 @@ namespace NvpwrControl
         private static bool LoadService(out string error)
         {
             error = null;
-            string sys = Path.Combine(Service.ExePath, "Nvpwr.sys");
+            string sys = Path.Combine(DseControl.AppDir, "Nvpwr.sys");
             if (!File.Exists(sys))
             {
                 error = "找不到驱动文件：" + sys;
