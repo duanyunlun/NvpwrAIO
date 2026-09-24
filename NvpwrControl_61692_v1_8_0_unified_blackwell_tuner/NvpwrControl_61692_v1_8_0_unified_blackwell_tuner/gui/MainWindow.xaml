@@ -206,13 +206,34 @@
         <!-- ===== header ===== -->
         <Border Grid.Row="0" Background="{StaticResource Rail}"
                 BorderBrush="{StaticResource CardBorder}" BorderThickness="0,0,0,1" Padding="18,9">
-            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBlock Text="NVPWR" FontSize="17" FontWeight="Bold"
-                           Foreground="{StaticResource TextMain}" VerticalAlignment="Center"/>
-                <TextBlock x:Name="SubtitleText" Text="笔记本显卡功耗控制" FontSize="12"
-                           Foreground="{StaticResource TextMuted}" Margin="12,0,0,0"
-                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-            </StackPanel>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="NVPWR" FontSize="17" FontWeight="Bold"
+                               Foreground="{StaticResource TextMain}" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="SubtitleText" Text="笔记本显卡功耗控制" FontSize="12"
+                               Foreground="{StaticResource TextMuted}" Margin="12,0,0,0"
+                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+
+                <!--
+                    The one thing that has to be said somewhere.
+
+                    Each card used to carry a 注意 panel. Two of them restated what the controls
+                    beside them already showed, and the third — that the power ceiling lives only
+                    in driver memory and is gone after a reboot — is a property of the whole
+                    program rather than of any one card, so it belongs up here where it covers all
+                    of them.
+                -->
+                <TextBlock x:Name="HeaderHint" Grid.Column="1" VerticalAlignment="Center"
+                           HorizontalAlignment="Right" FontSize="11.5"
+                           Foreground="{StaticResource TextDim}"
+                           Text="功耗上限只写在驱动内存里，重启必然失效 —— 需要常驻请点右下角「安装服务」"/>
+            </Grid>
         </Border>
 
         <!-- ===================== three cards ===================== -->
@@ -302,16 +323,6 @@
                         <TextBlock x:Name="PwHint" Style="{StaticResource Caption}" Margin="0,10,0,0"/>
                     </StackPanel>
 
-                    <Border Grid.Row="1" Style="{StaticResource NotePanel}">
-                        <StackPanel>
-                            <TextBlock Text="注意" FontSize="11" FontWeight="SemiBold"
-                                       Foreground="{StaticResource Accent}" Margin="0,0,0,5"/>
-                            <TextBlock Style="{StaticResource CardNote}"
-                                       Text="· 申请值 ≠ 生效值。驱动会与 NVIDIA 自身策略比对并回读，不一致就回滚到出厂基线。"/>
-                            <TextBlock Style="{StaticResource CardNote}" Margin="0,6,0,0"
-                                       Text="· 功耗上限只在驱动内存里，重启必然失效。要重启后继续生效，需点下方“安装服务”。"/>
-                        </StackPanel>
-                    </Border>
                 </Grid>
             </Border>
 
@@ -574,16 +585,6 @@
                         </StackPanel>
                     </StackPanel>
 
-                    <Border Grid.Row="1" Style="{StaticResource NotePanel}">
-                        <StackPanel>
-                            <TextBlock Text="注意" FontSize="11" FontWeight="SemiBold"
-                                       Foreground="{StaticResource Warn}" Margin="0,0,0,5"/>
-                            <TextBlock Style="{StaticResource CardNote}"
-                                       Text="· 输入框限定了合法范围，超出会拒绝应用，不会下发给驱动。"/>
-                            <TextBlock Style="{StaticResource CardNote}" Margin="0,6,0,0"
-                                       Text="· 显存显示驱动口径的时钟，与 nvidia-smi、MSI Center 一致，不做换算。"/>
-                        </StackPanel>
-                    </Border>
                 </Grid>
             </Border>
         </Grid>
