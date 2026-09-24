@@ -613,23 +613,5 @@
             </StackPanel>
         </Border>
 
-        <!-- ===== pending-confirmation banner ===== -->
-        <Border x:Name="Banner" Grid.Row="3" Background="#3C2C0C"
-                BorderBrush="#8A6D1F" BorderThickness="0,1,0,0" Padding="18,8" Visibility="Collapsed">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock x:Name="BannerText" Grid.Column="0" Foreground="{StaticResource Warn}"
-                           FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap"
-                           FontSize="12"/>
-                <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <Button Content="确认保留" Style="{StaticResource BtnPrimary}" Click="OnKeepPending"/>
-                    <Button Content="立即回滚" Style="{StaticResource BtnDanger}" Margin="0"
-                            Click="OnRevertPending"/>
-                </StackPanel>
-            </Grid>
-        </Border>
     </Grid>
 </Window>

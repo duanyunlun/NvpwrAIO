@@ -101,9 +101,7 @@ namespace NvpwrControl
 
 		private DispatcherTimer _refreshTimer;
 
-		private DispatcherTimer _bannerTimer;
 
-		private int _bannerSeconds;
 
 		private const double DESIGN_CLIENT_W = 1280.0;
 
@@ -1462,49 +1460,23 @@ namespace NvpwrControl
 			RefreshAll(logIt: false);
 		}
 
+		/// <summary>
+		/// Keeps the restore point that was taken before the write, and logs it.
+		///
+		/// This used to raise a banner along the bottom offering 确认保留 / 立即回滚. That was
+		/// dropped: every apply already goes through a confirmation dialog, so asking a second
+		/// time immediately afterwards was just noise. The restore point itself stays — 撤销 in
+		/// the bottom bar is still the way back, and it is the part that actually protects the
+		/// machine.
+		/// </summary>
 		private void ArmPending()
 		{
-			//IL_002c: Unknown result type (might be due to invalid IL or missing references)
-			//IL_0031: Unknown result type (might be due to invalid IL or missing references)
-			//IL_004a: Expected O, but got Unknown
-			_bannerSeconds = 0;
-			Banner.Visibility = Visibility.Visible;
-			BannerText.Text = "新设置已下发，待你确认保留    （不会自动回滚；若黑屏或驱动重置，重启即可回到出厂状态）";
-			if (_bannerTimer == null)
-			{
-				_bannerTimer = new DispatcherTimer
-				{
-					Interval = TimeSpan.FromSeconds(1.0)
-				};
-				_bannerTimer.Tick += delegate
-				{
-					_bannerSeconds++;
-					BannerText.Text = "新设置已下发，待你确认保留 — " + _bannerSeconds + " 秒    （不会自动回滚；若黑屏或驱动重置，重启即可回到出厂状态）";
-				};
-			}
-			_bannerTimer.Start();
-			Store.Log("已进入待确认状态");
+			Store.Log("已下发，恢复点已保留");
 		}
 
+		/// <summary>Retained so the call sites that ended a pending window stay readable.</summary>
 		private void DisarmPending()
 		{
-			if (_bannerTimer != null)
-			{
-				_bannerTimer.Stop();
-			}
-			Banner.Visibility = Visibility.Collapsed;
-		}
-
-		private void OnKeepPending(object sender, RoutedEventArgs e)
-		{
-			Store.ClearRestorePoint();
-			DisarmPending();
-			Store.Log("用户确认保留新设置");
-		}
-
-		private void OnRevertPending(object sender, RoutedEventArgs e)
-		{
-			OnUndo(sender, e);
 		}
 
 		internal RailOffsets PendingRailOffsets()
