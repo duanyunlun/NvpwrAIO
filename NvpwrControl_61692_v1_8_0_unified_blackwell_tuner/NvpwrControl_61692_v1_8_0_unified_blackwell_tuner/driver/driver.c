@@ -101,34 +101,83 @@
 #define POWER_LOW_STOCK           115000u
 #define POWER_LOW_MIN             120000u
 #define POWER_LOW_MAX             140000u
-#define POWER_5070_STOCK          140000u
 #define POWER_5070_MIN            145000u
-#define POWER_5070_MAX            180000u
-#define POWER_HIGH_MIN            175000u
-#define POWER_HIGH_MAX            225000u
 
-/* RTX 40 Series Laptop Power Constants */
-#define POWER_4050_STOCK          115000u
+/*
+    PER-MACHINE OEM BASELINES ARE NO LONGER COMPILE-TIME CONSTANTS.
+    WHERE: 1.8.0 defined POWER_5070_STOCK / POWER_4080_STOCK / POWER_4090_STOCK /
+           POWER_4060_STOCK / POWER_4070_STOCK / POWER_4050_STOCK and compared
+           the live OEM ceiling against them.
+    WHAT:  those constants are gone. The OEM ceiling is now read from the live
+           policy and accepted anywhere inside the POWER_OEM_MIN..POWER_OEM_MAX
+           window defined below; each profile keeps only the lower bound of its
+           own menu.
+    WHY:   pinning the baseline to one machine's factory wattage is what made
+           1.8.0 fail on the verified 175 W RTX 5090 Laptop: it could not
+           classify stock, could not recognise a raised ceiling, and could not
+           recover a partially applied state without a reboot.
+    WHY NOT REMOVE THE LOW-POWER CHECK TOO: the 115 W class profiles keep an
+           exact baseline test on purpose - that menu exists to unlock 120..140 W
+           on machines NVIDIA ships at exactly 115 W, and treating a different
+           ceiling as equivalent would ignore a different VRM/EC design.
+*/
+
+/*
+    USER-SELECTABLE CEILING (1.9.0)
+    WHERE: the delivered high bound of every per-profile target range.
+    WHAT:  raised from the historical per-profile maxima (180/225/250 W) to a
+           single absolute development ceiling of 350 W.
+    WHY:   the previous builds hard-capped what a user could even request, so an
+           already-unlocked machine could not be pushed further without editing
+           and recompiling the driver. The requested value is now user data.
+
+    SAFETY CONTRACT (unchanged and non-negotiable):
+           Raising a bound only widens what may be *requested*. It does NOT relax
+           the Phase A/Phase C readback verification. If NVIDIA's own generator
+           does not converge on the requested value, or the EC/OEM ceiling refuses
+           it, the transaction still fails closed and rolls back to the captured
+           OEM baseline. "User responsibility" is implemented as "the user may ask
+           for more", never as "we ignore a failed transition".
+*/
+#define POWER_CEILING_DEV         350000u
+#define POWER_5070_MAX            POWER_CEILING_DEV
+#define POWER_HIGH_MIN            175000u
+#define POWER_HIGH_MAX            POWER_CEILING_DEV
+
+/* RTX 40 Series Laptop Power Constants.
+   Only the menu bounds remain; the stock baselines are read from the live
+   policy (see the note above).
+
+   The 4070 Laptop deliberately shares the 4060 bounds — both ship in the
+   95..140 W class and the same 120..150 W menu applies, so a separate pair of
+   constants would be two names for one number. */
 #define POWER_4050_MIN            115000u
 #define POWER_4050_MAX            140000u
-#define POWER_4060_STOCK          140000u
 #define POWER_4060_MIN            120000u
 #define POWER_4060_MAX            150000u
-#define POWER_4070_STOCK          140000u
-#define POWER_4070_MIN            120000u
-#define POWER_4070_MAX            150000u
-#define POWER_4080_STOCK          175000u
 #define POWER_4080_MIN            150000u
-#define POWER_4080_MAX            225000u
-#define POWER_4090_STOCK          175000u
+#define POWER_4080_MAX            POWER_CEILING_DEV
 #define POWER_4090_MIN            150000u
-#define POWER_4090_MAX            250000u
+#define POWER_4090_MAX            POWER_CEILING_DEV
 
 #define POWER_ABSOLUTE_MIN        100000u
-#define POWER_ABSOLUTE_MAX        250000u
+#define POWER_ABSOLUTE_MAX        POWER_CEILING_DEV
 #define POWER_STEP                5000u
 #define PPAB_FIXED               25000u
 #define INVALID_POWER            0xFFFFFFFFu
+
+/*
+    GENERIC OEM-BASELINE SANITY WINDOW
+    WHERE: coherent-stock and recovery classification.
+    WHAT:  the OEM ceiling of a supported laptop is accepted anywhere in this
+           window instead of being pinned to one machine's value (140 W).
+    WHY:   1.8.0 hard-coded 140 W / 145..160 W in the recovery path, so the
+           verified 175 W machine (RTX 5090 Laptop) could not be classified or
+           recovered at all. The window is deliberately wide enough to cover
+           75..250 W laptops but still rejects implausible policy values.
+*/
+#define POWER_OEM_MIN             75000u
+#define POWER_OEM_MAX             250000u
 
 static const UCHAR g_SigGpuRegistry[] = {
     0x48,0x8B,0x05,0x51,0xB3,0x2A,0x01,0x44,0x8B,0xD9,0x4C,0x8B,0x88,0x08,0x02,0x00,0x00
@@ -161,6 +210,15 @@ static ULONG g_SavedInput14 = 0;
 static ULONG g_SavedAmount18 = 0;
 static ULONG g_SavedUpper24 = 0;
 static ULONG g_ActiveProfile = NvpwrProfileUnknown;
+/*
+    g_SessionMaxMw — the high bound authorized for the CURRENT request.
+    Verification compares against this instead of a compile-time constant so a
+    user-selected ceiling is honoured end to end without weakening the readback
+    checks: a value above the ceiling is rejected up front, and a value at or
+    below it must still converge exactly or the transaction rolls back.
+*/
+static ULONG g_SessionMaxMw = POWER_ABSOLUTE_MAX;
+static BOOLEAN g_SessionMaxValid = FALSE;
 
 typedef PVOID (*PFN_POLICY_LOOKUP)(PVOID Registry, ULONG Key);
 typedef ULONG (*PFN_BOARD_SET)(
@@ -604,6 +662,12 @@ static VOID FillStatusFromContext(const NVPWR_CONTEXT* Ctx, NVPWR_STATUS* Out)
         Out->SupportedMax = POWER_4050_MAX;
     }
 
+    /* 1.9.0: expose both the compile-time ceiling and the ceiling the user
+       actually authorized for this session, so the UI can show which bound is
+       really in force. */
+    Out->CeilingMax = POWER_CEILING_DEV;
+    Out->SessionMax = g_SessionMaxValid ? g_SessionMaxMw : POWER_CEILING_DEV;
+
     if (Out->MaxMode != 0 || Out->MaxCount != 1 || Out->MaxSource0 != SOURCE_FE) {
         Out->State = NvpwrStateContextInvalid;
         Out->Detail = NvpwrDetailSelector2Layout;
@@ -618,8 +682,11 @@ static VOID FillStatusFromContext(const NVPWR_CONTEXT* Ctx, NVPWR_STATUS* Out)
     }
 
     /* General applied state: base=(target-25 W), amount=25 W, and the
-       generator/board/current paths all agree on the same target. */
-    if (Out->UpperBoundary >= POWER_ABSOLUTE_MIN && Out->UpperBoundary <= POWER_ABSOLUTE_MAX &&
+       generator/board/current paths all agree on the same target.
+       1.9.0: the bound is the session ceiling the user authorized, not a
+       compile-time constant. The convergence requirements below are unchanged. */
+    if (Out->UpperBoundary >= POWER_ABSOLUTE_MIN &&
+        Out->UpperBoundary <= (g_SessionMaxValid ? g_SessionMaxMw : POWER_ABSOLUTE_MAX) &&
         (Out->UpperBoundary % POWER_STEP) == 0 &&
         Out->MaxEffective == Out->UpperBoundary &&
         Out->MaxSource0Value == Out->UpperBoundary &&
@@ -665,8 +732,10 @@ static VOID FillStatusFromContext(const NVPWR_CONTEXT* Ctx, NVPWR_STATUS* Out)
 
     /* Generic coherent OEM baseline for this exact 616.92 KMD layout.
        No hard-coded 140 W assumption: all Board/F7 paths must agree and the
-       generator's dynamic amount must be inactive. */
-    if (Out->UpperBoundary >= 100000u && Out->UpperBoundary <= 200000u &&
+       generator's dynamic amount must be inactive. 1.9.0 widens the accepted
+       window so 75..250 W laptops (including the verified 175 W RTX 5090
+       Laptop) classify as stock instead of falling through to MIXED. */
+    if (Out->UpperBoundary >= POWER_OEM_MIN && Out->UpperBoundary <= POWER_OEM_MAX &&
         Out->MaxEffective == Out->UpperBoundary &&
         Out->MaxSource0Value == Out->UpperBoundary &&
         Out->RootInitialized == 1 &&
@@ -844,16 +913,25 @@ static NTSTATUS RestoreSavedRoot(NVPWR_CONTEXT* Ctx)
 
 static NTSTATUS RestoreStock(VOID);
 
-static BOOLEAN IsSupportedTarget(ULONG Profile, ULONG Target, ULONG OemBaseline)
+/* 1.9.0: user-selectable high bound. MaxRequestedMw is supplied by the caller
+   (IOCTL field, clamped to POWER_CEILING_DEV). OEM-baseline validation is
+   machine-generic rather than tied to one laptop's factory wattage. */
+static BOOLEAN IsSupportedTarget(ULONG Profile, ULONG Target, ULONG OemBaseline, ULONG MaxRequestedMw)
 {
+    ULONG ceiling;
+
     if ((Target % POWER_STEP) != 0) return FALSE;
+
+    ceiling = MaxRequestedMw;
+    if (ceiling < POWER_ABSOLUTE_MIN) ceiling = POWER_ABSOLUTE_MIN;
+    if (ceiling > POWER_CEILING_DEV) ceiling = POWER_CEILING_DEV;
 
     if (Profile == NvpwrProfileRtx5050Laptop ||
         Profile == NvpwrProfileRtx5060Laptop || Profile == NvpwrProfileRtx5070Laptop) {
         /*
             LOW-POWER PROFILE SAFETY GATE
             WHERE: 5050/5060/5070 Laptop requests.
-            WHAT: authorize 120..140 W only when the live coherent OEM ceiling
+            WHAT: authorize 120..ceiling only when the live coherent OEM ceiling
                   is exactly 115 W on this audited NVIDIA runtime layout.
             WHY: model-name matching is not permission to raise power.  An OEM
                  configured for a lower ceiling may have a different VRM/EC/
@@ -861,45 +939,51 @@ static BOOLEAN IsSupportedTarget(ULONG Profile, ULONG Target, ULONG OemBaseline)
                  an equivalent 115 W platform.
         */
         if (OemBaseline != POWER_LOW_STOCK) return FALSE;
-        return Target >= POWER_LOW_MIN && Target <= POWER_LOW_MAX;
+        if (Target < POWER_LOW_MIN) return FALSE;
+        return Target <= (ceiling < POWER_LOW_MAX ? POWER_LOW_MAX : ceiling);
     }
 
     if (Profile == NvpwrProfileRtx5070TiLaptop) {
-        if (OemBaseline != POWER_5070_STOCK) return FALSE;
-        return Target >= POWER_5070_MIN && Target <= POWER_5070_MAX;
+        if (OemBaseline < POWER_OEM_MIN || OemBaseline > POWER_OEM_MAX) return FALSE;
+        if (Target < POWER_5070_MIN) return FALSE;
+        return Target <= ceiling;
     }
 
     if (Profile == NvpwrProfileRtx5080Laptop || Profile == NvpwrProfileRtx5090Laptop) {
         /* High-power profiles are intentionally accepted only when the live OEM
-           baseline is already in the 150-175 W class. This prevents selecting a
-           5080/5090 profile on the verified 140 W 5070 Ti machine. */
-        if (OemBaseline < 150000u || OemBaseline > 175000u) return FALSE;
-        return Target >= POWER_HIGH_MIN && Target <= POWER_HIGH_MAX;
+           baseline is already in the 150 W+ class. This prevents selecting a
+           5080/5090 profile on a 115/140 W machine. */
+        if (OemBaseline < 150000u || OemBaseline > POWER_OEM_MAX) return FALSE;
+        if (Target < POWER_HIGH_MIN) return FALSE;
+        return Target <= ceiling;
     }
 
     if (Profile == NvpwrProfileRtx4090Laptop) {
-        /* RTX 4090 Laptop GPU: OEM baseline typically 115..175 W depending on OEM mode (e.g. Balanced 130 W / Extreme 175 W).
-           Unlock target: 150..250 W. */
-        if (OemBaseline < 115000u || OemBaseline > 175000u) return FALSE;
-        return Target >= POWER_4090_MIN && Target <= POWER_4090_MAX;
+        /* RTX 4090 Laptop GPU: OEM baseline typically 115..175 W depending on OEM mode (e.g. Balanced 130 W / Extreme 175 W). */
+        if (OemBaseline < 115000u || OemBaseline > POWER_OEM_MAX) return FALSE;
+        if (Target < POWER_4090_MIN) return FALSE;
+        return Target <= ceiling;
     }
 
     if (Profile == NvpwrProfileRtx4080Laptop) {
-        /* RTX 4080 Laptop GPU: OEM baseline typically 115..175 W. Unlock target: 150..225 W. */
-        if (OemBaseline < 115000u || OemBaseline > 175000u) return FALSE;
-        return Target >= POWER_4080_MIN && Target <= POWER_4080_MAX;
+        /* RTX 4080 Laptop GPU: OEM baseline typically 115..175 W. */
+        if (OemBaseline < 115000u || OemBaseline > POWER_OEM_MAX) return FALSE;
+        if (Target < POWER_4080_MIN) return FALSE;
+        return Target <= ceiling;
     }
 
     if (Profile == NvpwrProfileRtx4070Laptop || Profile == NvpwrProfileRtx4060Laptop) {
-        /* RTX 4060 / 4070 Laptop GPU: OEM baseline typically 95..140 W. Target: 120..150 W. */
+        /* RTX 4060 / 4070 Laptop GPU: OEM baseline typically 95..140 W. */
         if (OemBaseline < 95000u || OemBaseline > 140000u) return FALSE;
-        return Target >= POWER_4060_MIN && Target <= POWER_4060_MAX;
+        if (Target < POWER_4060_MIN) return FALSE;
+        return Target <= (ceiling < POWER_4060_MAX ? POWER_4060_MAX : ceiling);
     }
 
     if (Profile == NvpwrProfileRtx4050Laptop) {
-        /* RTX 4050 Laptop GPU: OEM baseline typically 75..140 W. Target: 115..140 W. */
+        /* RTX 4050 Laptop GPU: OEM baseline typically 75..140 W. */
         if (OemBaseline < 75000u || OemBaseline > 140000u) return FALSE;
-        return Target >= POWER_4050_MIN && Target <= POWER_4050_MAX;
+        if (Target < POWER_4050_MIN) return FALSE;
+        return Target <= (ceiling < POWER_4050_MAX ? POWER_4050_MAX : ceiling);
     }
 
     return FALSE;
@@ -984,17 +1068,29 @@ static NTSTATUS StageTargetAtStockCeiling(NVPWR_CONTEXT* Ctx, ULONG Target, ULON
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS SetPowerTarget(ULONG Profile, ULONG Target)
+static NTSTATUS SetPowerTarget(ULONG Profile, ULONG Target, ULONG MaxRequestedMw)
 {
     NVPWR_CONTEXT ctx;
     NVPWR_STATUS s;
     NTSTATUS status;
     ULONG detail = NvpwrDetailOk;
     ULONG nv;
+    ULONG ceiling;
 
     if (KeGetCurrentIrql() != PASSIVE_LEVEL) return STATUS_INVALID_DEVICE_STATE;
 
-    NVPWR_LOG_INFO("SetPowerTarget: request profile=%lu target=%lu mW\n", Profile, Target);
+    /* Resolve the effective ceiling for this request before anything else. 0 (or
+       a value below the absolute minimum) means "use the compiled default". */
+    ceiling = MaxRequestedMw;
+    if (ceiling == 0u || ceiling < POWER_ABSOLUTE_MIN) ceiling = POWER_ABSOLUTE_MAX;
+    if (ceiling > POWER_CEILING_DEV) {
+        NVPWR_LOG_WARN("SetPowerTarget: requested ceiling %lu exceeds driver ceiling %lu; clamping\n",
+            MaxRequestedMw, POWER_CEILING_DEV);
+        ceiling = POWER_CEILING_DEV;
+    }
+
+    NVPWR_LOG_INFO("SetPowerTarget: request profile=%lu target=%lu mW ceiling=%lu mW\n",
+        Profile, Target, ceiling);
     status = ResolveContext(&ctx, &detail);
     if (!NT_SUCCESS(status)) return status;
 
@@ -1005,15 +1101,19 @@ static NTSTATUS SetPowerTarget(ULONG Profile, ULONG Target)
     {
         ULONG baseline = g_SavedValid ? g_SavedUpper24 :
             ((s.State == NvpwrStateStockBaseline) ? s.UpperBoundary : 0);
-        NVPWR_LOG_INFO("SetPowerTarget: liveState=%lu baseline=%lu mW activeProfile=%lu savedValid=%u\n",
+        NVPWR_LOG_INFO("SetPowerTarget: liveState=%lu baseline=%lu activeProfile=%lu savedValid=%u\n",
             s.State, baseline, g_ActiveProfile, g_SavedValid);
-        if (!IsSupportedTarget(Profile, Target, baseline)) {
+        if (!IsSupportedTarget(Profile, Target, baseline, ceiling)) {
             NVPWR_LOG_ERROR(
-                "SetPowerTarget: target/profile rejected profile=%lu target=%lu baseline=%lu\n",
-                Profile, Target, baseline);
+                "SetPowerTarget: target/profile rejected profile=%lu target=%lu baseline=%lu ceiling=%lu\n",
+                Profile, Target, baseline, ceiling);
             return STATUS_INVALID_PARAMETER;
         }
     }
+
+    /* Authorize the ceiling only after the request passed validation. */
+    g_SessionMaxMw = ceiling;
+    g_SessionMaxValid = TRUE;
 
     if (s.State == NvpwrStateApplied && s.AppliedTarget == Target)
         return STATUS_SUCCESS;
@@ -1101,13 +1201,26 @@ static BOOLEAN IsRecoverableExternalModifiedState(const NVPWR_STATUS* S)
 {
     if (!S) return FALSE;
 
-    /* Recognize only the exact family produced by our earlier 616.92 proofs:
-       known 145..160 W ceiling, FE MAX agreeing with current/F7, initialized
-       generator, eligibility+amount active, and the verified 25 W amount.
-       CtgpTarget is intentionally not constrained to target-25 because an
-       NVIDIA/Lenovo policy refresh can update the base while leaving the
-       raised ceiling live; that is the MIXED state v1.2 exposed. */
-    if (S->UpperBoundary < 145000u || S->UpperBoundary > 160000u)
+    /*
+        RECOGNIZED RAISED-CEILING FAMILY (1.9.0 — machine-generic)
+        WHERE: driver loaded after an older helper already raised the ceiling, so
+               this driver has no captured baseline of its own.
+        WHAT:  accept any coherent, believable raised-ceiling policy in the
+               POWER_OEM_MIN..POWER_CEILING_DEV window where Board MAX, generator
+               output and both F7 projections all agree, the generator is
+               initialized, eligibility and the dynamic amount are active, and
+               the amount is a plausible Dynamic Boost share of the ceiling.
+        WHY:   1.8.0 pinned this to "145..160 W and PPAB==25/30/40 W", i.e. the
+               RTX 5070 Ti proof machine only. On the verified 175 W RTX 5090
+               Laptop a raised ceiling could therefore never be recognized, and a
+               partially applied state could only be cleared by rebooting. The
+               window is now derived from the live policy values instead of one
+               machine's constants.
+
+        The recovery this enables (ForceKnownStockBaseline) only ever writes a
+        clean, stock-consistent policy; it is not a general "write anything" path.
+    */
+    if (S->UpperBoundary < POWER_OEM_MIN || S->UpperBoundary > POWER_CEILING_DEV)
         return FALSE;
     if ((S->UpperBoundary % POWER_STEP) != 0)
         return FALSE;
@@ -1121,28 +1234,60 @@ static BOOLEAN IsRecoverableExternalModifiedState(const NVPWR_STATUS* S)
         return FALSE;
     if (S->RootInitialized != 1 || S->Eligibility != 1 || S->AmountActive != 1)
         return FALSE;
-    /* Accept the current 25 W model and the two earlier proof splits that were
-       actually verified on this machine: 150=120+30 and 160=120+40. */
-    if (S->PpabAmount != PPAB_FIXED &&
-        !(S->UpperBoundary == 150000u && S->PpabAmount == 30000u) &&
-        !(S->UpperBoundary == 160000u && S->PpabAmount == 40000u))
+    /* Dynamic Boost share must be a sane fraction of the ceiling. The historical
+       proof splits translate to 20% (25 W of 125 W), 20% (30 of 150) and 25%
+       (40 of 160); current builds use 25 W. Accept 1..40 % and a 5 W step so the
+       verified 25 W model and the earlier proof splits all qualify. */
+    if (S->PpabAmount < 1000u || S->PpabAmount > (S->UpperBoundary * 40u) / 100u)
+        return FALSE;
+    if ((S->PpabAmount % 1000u) != 0)
         return FALSE;
     return TRUE;
 }
 
+/*
+    FORCED STOCK RECONSTRUCTION (1.9.0 — machine-generic)
+    WHERE: a raised-ceiling policy was left behind by an earlier helper or by a
+           previous driver load, and this driver has no captured baseline.
+    WHAT:  write a clean, internally consistent stock policy using the ceiling
+           OBSERVED ON THIS MACHINE, re-run NVIDIA's own generator, then require
+           the generic coherent-stock classifier to accept the result.
+    WHY:   1.8.0 wrote the compile-time constant POWER_5070_STOCK (140 W). On the
+           verified 175 W RTX 5090 Laptop that wrote the wrong ceiling and the
+           verification below then failed, leaving the user with no recovery path
+           short of a reboot.
+
+    FAIL-CLOSED: the observed ceiling must be inside the plausible OEM window and
+    aligned to the power step, and the post-write classification must succeed.
+    If anything is off, this returns an error and changes nothing.
+*/
 static NTSTATUS ForceKnownStockBaseline(NVPWR_CONTEXT* Ctx)
 {
     NVPWR_STATUS s;
     ULONG nv;
+    ULONG stock;
 
     if (!Ctx) return STATUS_INVALID_PARAMETER;
 
-    /* Reconstruct the exact stock baseline observed and repeatedly verified on
-       this 616.92 machine. Order mirrors the successful saved-state rollback:
-       restore generator inputs/ceiling, regenerate through NVIDIA's native
-       eligibility setter, then restore the board MAX source FE. */
-    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + OFF_ROOT_UPPER), (LONG)POWER_5070_STOCK);
-    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + OFF_ROOT_CTGP), (LONG)POWER_5070_STOCK);
+    RtlZeroMemory(&s, sizeof(s));
+    s.Version = NVPWR_STATUS_VERSION;
+    FillStatusFromContext(Ctx, &s);
+
+    stock = s.UpperBoundary;
+    if (stock < POWER_OEM_MIN || stock > POWER_CEILING_DEV || (stock % POWER_STEP) != 0) {
+        NVPWR_LOG_ERROR(
+            "ForceKnownStockBaseline: observed ceiling %lu mW is not a plausible OEM baseline\n",
+            stock);
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    NVPWR_LOG_WARN("ForceKnownStockBaseline: reconstructing stock from observed ceiling=%lu mW\n", stock);
+
+    /* Order mirrors the verified saved-state rollback: restore generator
+       inputs/ceiling, regenerate through NVIDIA's native eligibility setter,
+       then restore the board MAX source FE. */
+    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + OFF_ROOT_UPPER), (LONG)stock);
+    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + OFF_ROOT_CTGP), (LONG)stock);
     InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + OFF_ROOT_AMOUNT), 0);
     *(volatile UCHAR*)((PUCHAR)Ctx->Root + OFF_ROOT_AMOUNT_ACTIVE) = 0;
     KeMemoryBarrier();
@@ -1150,14 +1295,20 @@ static NTSTATUS ForceKnownStockBaseline(NVPWR_CONTEXT* Ctx)
     nv = CallSetEligibility(Ctx, 0);
     if (nv != 0) return STATUS_UNSUCCESSFUL;
 
-    nv = CallBoardSet(Ctx, SELECTOR_MAX, SOURCE_FE, POWER_5070_STOCK);
+    nv = CallBoardSet(Ctx, SELECTOR_MAX, SOURCE_FE, stock);
     if (nv != 0) return STATUS_UNSUCCESSFUL;
 
     RtlZeroMemory(&s, sizeof(s));
     s.Version = NVPWR_STATUS_VERSION;
     FillStatusFromContext(Ctx, &s);
-    if (s.State != NvpwrStateStockBaseline)
+    if (s.State != NvpwrStateStockBaseline) {
+        NVPWR_LOG_ERROR(
+            "ForceKnownStockBaseline: verification FAILED state=%lu upper=%lu max=%lu f7=%lu\n",
+            s.State, s.UpperBoundary, s.MaxEffective, s.CurrentF7Value);
         return STATUS_DATA_ERROR;
+    }
+
+    NVPWR_LOG_INFO("ForceKnownStockBaseline: SUCCESS stock ceiling=%lu mW restored\n", s.UpperBoundary);
 
     g_MutationAttempted = FALSE;
     g_MutatedRoot = NULL;
@@ -1169,6 +1320,8 @@ static NTSTATUS ForceKnownStockBaseline(NVPWR_CONTEXT* Ctx)
     g_SavedAmount18 = 0;
     g_SavedUpper24 = 0;
     g_ActiveProfile = NvpwrProfileUnknown;
+    g_SessionMaxValid = FALSE;
+    g_SessionMaxMw = POWER_ABSOLUTE_MAX;
     return STATUS_SUCCESS;
 }
 
@@ -1192,6 +1345,9 @@ static NTSTATUS RestoreStock(VOID)
 
     if (s.State == NvpwrStateStockBaseline) {
         NVPWR_LOG_INFO("RestoreStock: already at coherent OEM baseline=%lu mW\n", s.UpperBoundary);
+        /* Returning to OEM also releases any session ceiling the user raised. */
+        g_SessionMaxValid = FALSE;
+        g_SessionMaxMw = POWER_ABSOLUTE_MAX;
         return STATUS_SUCCESS;
     }
 
@@ -1225,6 +1381,8 @@ static NTSTATUS RestoreStock(VOID)
         g_SavedAmount18 = 0;
         g_SavedUpper24 = 0;
         g_ActiveProfile = NvpwrProfileUnknown;
+        g_SessionMaxValid = FALSE;
+        g_SessionMaxMw = POWER_ABSOLUTE_MAX;
         NVPWR_LOG_INFO("RestoreStock: SUCCESS captured OEM baseline restored\n");
         return STATUS_SUCCESS;
     }
@@ -1282,10 +1440,11 @@ static NTSTATUS DispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
                 status = STATUS_INVALID_PARAMETER;
                 break;
             }
-            NVPWR_LOG_INFO("IOCTL_SET_POWER: profile=%lu target=%lu mW\n",
-                request->Profile, request->TargetMilliwatts);
+            NVPWR_LOG_INFO("IOCTL_SET_POWER: profile=%lu target=%lu mW ceiling=%lu mW\n",
+                request->Profile, request->TargetMilliwatts, request->MaxMilliwatts);
             KeWaitForSingleObject(&g_OperationMutex, Executive, KernelMode, FALSE, NULL);
-            status = SetPowerTarget(request->Profile, request->TargetMilliwatts);
+            status = SetPowerTarget(request->Profile, request->TargetMilliwatts,
+                request->MaxMilliwatts);
             KeReleaseMutex(&g_OperationMutex, FALSE);
             if (NT_SUCCESS(status))
                 NVPWR_LOG_INFO("IOCTL_SET_POWER: completed NTSTATUS=0x%08X\n", status);

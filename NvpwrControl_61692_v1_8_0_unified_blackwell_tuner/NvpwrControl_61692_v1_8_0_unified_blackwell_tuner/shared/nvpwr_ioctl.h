@@ -8,8 +8,8 @@
 #endif
 
 #define NVPWR_DEVICE_WIN32 L"\\\\.\\Nvpwr"
-#define NVPWR_STATUS_VERSION 7u
-#define NVPWR_SET_VERSION 2u
+#define NVPWR_STATUS_VERSION 8u
+#define NVPWR_SET_VERSION 3u
 
 #define IOCTL_NVPWR_STATUS    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_READ_ACCESS)
 #define IOCTL_NVPWR_SET_POWER CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
@@ -67,6 +67,14 @@ typedef struct _NVPWR_SET_POWER {
     ULONG Version;
     ULONG TargetMilliwatts;
     ULONG Profile;
+    /*
+        MaxMilliwatts — user-selected high bound for this request (1.9.0).
+        The driver clamps it to its own POWER_CEILING_DEV. It widens what may be
+        REQUESTED only; the Phase A/Phase C convergence checks are unchanged, so
+        a target the hardware will not honour still fails closed and rolls back.
+        0 means "use the driver's default ceiling".
+    */
+    ULONG MaxMilliwatts;
     ULONG Reserved;
 } NVPWR_SET_POWER;
 
@@ -124,5 +132,9 @@ typedef struct _NVPWR_STATUS {
     ULONG ActiveProfile;
     ULONG SupportedMin;
     ULONG SupportedMax;
+
+    /* 1.9.0 additions. Appended so the earlier field offsets stay stable. */
+    ULONG CeilingMax;   /* compile-time ceiling compiled into this driver */
+    ULONG SessionMax;   /* ceiling the user authorized for the current session */
 } NVPWR_STATUS;
 #pragma pack(pop)

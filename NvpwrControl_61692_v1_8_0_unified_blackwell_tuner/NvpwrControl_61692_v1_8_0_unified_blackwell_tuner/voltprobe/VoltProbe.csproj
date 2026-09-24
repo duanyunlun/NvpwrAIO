@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    DELIBERATELY SEPARATE FROM THE MAIN APPLICATION.
+
+    This is a one-off hardware experiment, not a product. It is kept out of the
+    GUI project on purpose:
+
+      * the main application's voltage-writing path stays empty until the
+        semantics of ClientVoltRailsSetControl are established, so a build of the
+        GUI can never write voltage by accident;
+      * whatever this tool learns (valid range, sign convention, whether the call
+        needs elevation) is written down once and then the tool's job is done.
+
+    Console, no dependencies beyond the .NET runtime already on the machine, so
+    it can be run and inspected without shipping anything.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>VoltProbe</AssemblyName>
+    <RootNamespace>VoltProbe</RootNamespace>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <CodePage>65001</CodePage>
+    <!--
+      requireAdministrator: NVAPI tuning calls are expected to need elevation, and
+      the earlier rc=-1 from a non-elevated probe is consistent with that. Running
+      elevated from the start removes one variable from the experiment.
+    -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+</Project>

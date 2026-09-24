@@ -1,0 +1,4 @@
+# 编辑时的临时备份（PowerShell 改代码用）
+*.bak
+*.bak2
+*.bak3
