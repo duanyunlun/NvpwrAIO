@@ -386,7 +386,6 @@
                                 TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
                                 ValueChanged="OnMaxVoltSliderChanged"/>
 
-
                         <!-- The arithmetic for the two limits, directly under the two sliders it
                              describes. At the bottom of the card it looked like a summary of every
                              control, but the demand offsets below are independent of the limits and
@@ -404,9 +403,6 @@
                                 </StackPanel>
                             </StackPanel>
                         </Border>
-
-
-
 
                         <!-- OV is its own control, the way the companion tool has it. It is the
                              only offset that can pull the effective maximum *down*: REL does not
@@ -464,7 +460,6 @@
                                        Text="允许 -25–50 mV"/>
                         </Grid>
 
-
                         <!-- 清零/应用 act on the whole card, so they stay together on the left;
                              打开 mVolt+ is a way out to another program and sits apart on the
                              right, where it cannot be hit by mistake while reaching for 应用. -->
@@ -502,9 +497,6 @@
                                         Background="{StaticResource Warn}"/>
                                 <TextBlock Text="频率" Style="{StaticResource SectionTitle}"/>
                             </StackPanel>
-                            <TextBlock x:Name="ClkRangeHint" Grid.Column="1" Style="{StaticResource BigSub}"
-                                       Foreground="{StaticResource TextDim}" HorizontalAlignment="Right"
-                                       VerticalAlignment="Center" Text="—"/>
                         </Grid>
 
                         <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
@@ -528,37 +520,48 @@
                             </StackPanel>
                         </StackPanel>
 
-                        <TextBlock Text="偏移（MHz）" Style="{StaticResource RowLabel}" Margin="0,18,0,0"/>
-
-                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <!--
+                            Same shape as the power card's control row: the low end of the range on the
+                            left, the value being set in the middle, the high end on the right, and a
+                            stepper either side. The middle is editable here rather than a readout,
+                            because a clock offset is a number people usually know before they start
+                            and stepping to it 50 MHz at a time would be tedious.
+                        -->
+                        <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
                             <TextBlock Text="核心" Style="{StaticResource RowLabel}" Width="38"/>
-                            <TextBox x:Name="ClkCore" Style="{StaticResource Input}"/>
                             <TextBlock x:Name="ClkCoreMinLabel" Style="{StaticResource Caption}"
-                                       VerticalAlignment="Center" Margin="8,0,0,0" Text="—"/>
-                            <TextBlock Text="…" Style="{StaticResource Caption}" VerticalAlignment="Center"
-                                       Margin="3,0,3,0"/>
+                                       VerticalAlignment="Center" Margin="0,0,6,0" Text="—"/>
+                            <Button Content="−" Style="{StaticResource Step}" Click="OnClkCoreMinus"/>
+                            <TextBox x:Name="ClkCore" Style="{StaticResource Input}" Width="58"
+                                     PreviewTextInput="OnClockIntegerOnly"/>
+                            <Button Content="+" Style="{StaticResource Step}" Margin="6,0,6,0"
+                                    Click="OnClkCorePlus"/>
                             <TextBlock x:Name="ClkCoreMaxLabel" Style="{StaticResource Caption}"
                                        VerticalAlignment="Center" Text="—"/>
                         </StackPanel>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                             <TextBlock Text="显存" Style="{StaticResource RowLabel}" Width="38"/>
-                            <TextBox x:Name="ClkMem" Style="{StaticResource Input}"/>
                             <TextBlock x:Name="ClkMemMinLabel" Style="{StaticResource Caption}"
-                                       VerticalAlignment="Center" Margin="8,0,0,0" Text="—"/>
-                            <TextBlock Text="…" Style="{StaticResource Caption}" VerticalAlignment="Center"
-                                       Margin="3,0,3,0"/>
+                                       VerticalAlignment="Center" Margin="0,0,6,0" Text="—"/>
+                            <Button Content="−" Style="{StaticResource Step}" Click="OnClkMemMinus"/>
+                            <TextBox x:Name="ClkMem" Style="{StaticResource Input}" Width="58"
+                                     PreviewTextInput="OnClockIntegerOnly"/>
+                            <Button Content="+" Style="{StaticResource Step}" Margin="6,0,6,0"
+                                    Click="OnClkMemPlus"/>
                             <TextBlock x:Name="ClkMemMaxLabel" Style="{StaticResource Caption}"
                                        VerticalAlignment="Center" Text="—"/>
                         </StackPanel>
 
-                        <StackPanel x:Name="ClkXbarRow" Orientation="Horizontal" Margin="0,8,0,0">
+                        <StackPanel x:Name="ClkXbarRow" Orientation="Horizontal" Margin="0,10,0,0">
                             <TextBlock Text="XBAR" Style="{StaticResource RowLabel}" Width="38"/>
-                            <TextBox x:Name="ClkXbar" Style="{StaticResource Input}"/>
                             <TextBlock x:Name="ClkXbarMinLabel" Style="{StaticResource Caption}"
-                                       VerticalAlignment="Center" Margin="8,0,0,0" Text="—"/>
-                            <TextBlock Text="…" Style="{StaticResource Caption}" VerticalAlignment="Center"
-                                       Margin="3,0,3,0"/>
+                                       VerticalAlignment="Center" Margin="0,0,6,0" Text="—"/>
+                            <Button Content="−" Style="{StaticResource Step}" Click="OnClkXbarMinus"/>
+                            <TextBox x:Name="ClkXbar" Style="{StaticResource Input}" Width="58"
+                                     PreviewTextInput="OnClockIntegerOnly"/>
+                            <Button Content="+" Style="{StaticResource Step}" Margin="6,0,6,0"
+                                    Click="OnClkXbarPlus"/>
                             <TextBlock x:Name="ClkXbarMaxLabel" Style="{StaticResource Caption}"
                                        VerticalAlignment="Center" Text="—"/>
                         </StackPanel>

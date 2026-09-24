@@ -38,6 +38,12 @@ namespace NvpwrControl
 
 		private const int VOLT_STEP_MV = 5;
 
+		/// <summary>
+		/// Step for the clock offset steppers, matching the power card coarse steps. The middle
+		/// field is typed as well, so this is for nudging rather than for getting there.
+		/// </summary>
+		private const int CLK_STEP_MHZ = 50;
+
 		private const int VOLT_MIN_MV = -25;
 
 		private const int VOLT_MAX_MV = 50;
@@ -340,12 +346,21 @@ namespace NvpwrControl
 			TuningState tuningState = Tuning.Query();
 			if (!tuningState.CoreOk && !tuningState.MemoryOk && !tuningState.XbarOk)
 			{
-				ClkRangeHint.Text = "本机未开放可写的频率偏移";
-				Tip(ClkRangeHint, "Pstates20 在此显卡/驱动上没有返回可写的偏移范围，输入框都会置灰。");
+				// No writable ranges were reported, so the fields stay empty and greyed.
 				return;
 			}
-			ClkRangeHint.Text = "范围已标在每个输入框两侧";
-			Tip(ClkRangeHint, string.Format(CultureInfo.InvariantCulture, "各域可写范围（MHz）：\n  核心 {0}…{1}\n  显存 {2}…{3}\n超出范围的输入会被拒绝，不会下发给驱动。", tuningState.CoreMin, tuningState.CoreMax, tuningState.MemoryMin, tuningState.MemoryMax));
+			// The range now lives at the ends of each row, the way the power card states its floor
+			// and ceiling, rather than in a sentence at the top of the card.
+			ClkCoreMinLabel.Text = tuningState.CoreMin.ToString(CultureInfo.InvariantCulture);
+			ClkCoreMaxLabel.Text = "+" + tuningState.CoreMax.ToString(CultureInfo.InvariantCulture);
+			ClkMemMinLabel.Text = tuningState.MemoryMin.ToString(CultureInfo.InvariantCulture);
+			ClkMemMaxLabel.Text = "+" + tuningState.MemoryMax.ToString(CultureInfo.InvariantCulture);
+			Tip(ClkCore, string.Format(CultureInfo.InvariantCulture,
+				"核心频率偏移，可写范围 {0}…+{1} MHz，步进 {2} MHz。\n超出范围会被拒绝，不会下发给驱动。",
+				tuningState.CoreMin, tuningState.CoreMax, CLK_STEP_MHZ));
+			Tip(ClkMem, string.Format(CultureInfo.InvariantCulture,
+				"显存频率偏移，可写范围 {0}…+{1} MHz，步进 {2} MHz。\n超出范围会被拒绝，不会下发给驱动。",
+				tuningState.MemoryMin, tuningState.MemoryMax, CLK_STEP_MHZ));
 		}
 
 		private void OnClosing(object sender, CancelEventArgs e)
@@ -1124,6 +1139,87 @@ namespace NvpwrControl
 			ClkCore.Text = _state.Clock.CoreOffsetMhz.ToString(CultureInfo.InvariantCulture);
 			ClkMem.Text = _state.Clock.MemoryOffsetMhz.ToString(CultureInfo.InvariantCulture);
 			ClkXbar.Text = _state.Clock.XbarOffsetMhz.ToString(CultureInfo.InvariantCulture);
+		}
+
+		// ------------------------------------------------------------------ clock steppers
+
+		private void OnClkCoreMinus(object sender, RoutedEventArgs e) { StepClock(ClkCore, -CLK_STEP_MHZ); }
+		private void OnClkCorePlus(object sender, RoutedEventArgs e) { StepClock(ClkCore, CLK_STEP_MHZ); }
+		private void OnClkMemMinus(object sender, RoutedEventArgs e) { StepClock(ClkMem, -CLK_STEP_MHZ); }
+		private void OnClkMemPlus(object sender, RoutedEventArgs e) { StepClock(ClkMem, CLK_STEP_MHZ); }
+		private void OnClkXbarMinus(object sender, RoutedEventArgs e) { StepClock(ClkXbar, -CLK_STEP_MHZ); }
+		private void OnClkXbarPlus(object sender, RoutedEventArgs e) { StepClock(ClkXbar, CLK_STEP_MHZ); }
+
+		/// <summary>
+		/// Nudges a clock offset field by one step and keeps it inside the writable range.
+		///
+		/// Clamped rather than allowed past the ends: a value outside the range is refused at
+		/// apply time, so letting the stepper walk into it would only produce a rejection the user
+		/// then has to undo. The ranges are read once here rather than cached, because they come
+		/// from the driver and can differ per domain.
+		/// </summary>
+		private void StepClock(TextBox box, int delta)
+		{
+			if (box == null || !box.IsEnabled)
+			{
+				return;
+			}
+			TuningState ranges = Tuning.Query();
+			int low, high;
+			if (box == ClkCore)
+			{
+				low = (int)ranges.CoreMin;
+				high = (int)ranges.CoreMax;
+			}
+			else if (box == ClkMem)
+			{
+				low = (int)ranges.MemoryMin;
+				high = (int)ranges.MemoryMax;
+			}
+			else
+			{
+				// No range is reported for XBAR — the driver does not expose one — and the row is
+				// hidden whenever that is so. The field is disabled in that case and the guard at
+				// the top of this method has already returned; these bounds are only here so the
+				// value cannot run away if that ever changes.
+				low = (int)ranges.CoreMin;
+				high = (int)ranges.CoreMax;
+			}
+
+			int value;
+			if (!int.TryParse(box.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+			{
+				value = 0;
+			}
+			value += delta;
+			if (value < low)
+			{
+				value = low;
+			}
+			if (value > high)
+			{
+				value = high;
+			}
+			box.Text = value.ToString(CultureInfo.InvariantCulture);
+			box.CaretIndex = box.Text.Length;
+		}
+
+		/// <summary>
+		/// Rejects anything but digits and a leading minus as it is typed.
+		///
+		/// The offsets are whole megahertz; letting a decimal point in would only produce a value
+		/// that fails validation later, with nothing to say why.
+		/// </summary>
+		private void OnClockIntegerOnly(object sender, TextCompositionEventArgs e)
+		{
+			foreach (char c in e.Text)
+			{
+				if (!char.IsDigit(c) && c != '-')
+				{
+					e.Handled = true;
+					return;
+				}
+			}
 		}
 
 		private void OnApplyClocks(object sender, RoutedEventArgs e)
