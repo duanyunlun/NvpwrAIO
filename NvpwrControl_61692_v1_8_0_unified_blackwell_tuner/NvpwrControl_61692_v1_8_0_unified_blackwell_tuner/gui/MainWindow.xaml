@@ -283,14 +283,27 @@
                             </StackPanel>
                         </Grid>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                            <StackPanel Margin="0,0,30,0">
+                        <!--
+                            A Grid with fixed column widths rather than a horizontal StackPanel.
+
+                            Stacked panels size to whatever they contain, so the readings shifted
+                            sideways every time a number changed width — 982 MHz and 1005 MHz are
+                            not the same width, and everything to their right moved with them. The
+                            columns here are sized for the widest reading each one can hold.
+                        -->
+                        <Grid Margin="0,16,0,0" HorizontalAlignment="Left">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="124"/>
+                                <ColumnDefinition Width="124"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
                                 <TextBlock x:Name="PwNow" Style="{StaticResource BigNumber}"
                                            Foreground="{StaticResource TextMain}" Text="—"/>
                                 <TextBlock Text="当前功耗" Style="{StaticResource BigSub}"
                                            Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
                             </StackPanel>
-                            <StackPanel Margin="0,0,30,0">
+                            <StackPanel Grid.Column="1">
                                 <TextBlock x:Name="PwLimitNow" Style="{StaticResource BigNumber}"
                                            Foreground="{StaticResource TextMain}" Text="—"/>
                                 <TextBlock Text="当前上限" Style="{StaticResource BigSub}"
@@ -298,13 +311,13 @@
                             </StackPanel>
                             <!-- Temperature lives here now: it belongs with power, since the two
                                  together decide whether a raised ceiling can actually be used. -->
-                            <StackPanel>
+                            <StackPanel Grid.Column="2">
                                 <TextBlock x:Name="PwTemp" Style="{StaticResource BigNumber}"
                                            Foreground="{StaticResource TextMain}" Text="—"/>
                                 <TextBlock Text="核心温度" Style="{StaticResource BigSub}"
                                            Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
                             </StackPanel>
-                        </StackPanel>
+                        </Grid>
 
                         <!--
                             Read left to right as a range: what the card defaults to, the stepper
@@ -346,26 +359,38 @@
                             <TextBlock Text="频率" Style="{StaticResource SectionTitle}"/>
                         </StackPanel>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                            <StackPanel Margin="0,0,24,0">
+                        <!--
+                            Fixed columns for the same reason as the power card's readings: the two
+                            clock values change width as they change value, and everything to their
+                            right used to move with them. Sized for the widest each can show —
+                            1995 MHz for core, 14001 MHz for memory — with the share-of-load
+                            column left to size itself, since it tops out at 100 %.
+                        -->
+                        <Grid Margin="0,12,0,0" HorizontalAlignment="Left">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="124"/>
+                                <ColumnDefinition Width="132"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
                                 <TextBlock x:Name="ClkNow" Style="{StaticResource BigNumber}"
                                            Foreground="{StaticResource TextMain}" Text="—"/>
                                 <TextBlock Text="核心频率" Style="{StaticResource BigSub}"
                                            Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
                             </StackPanel>
-                            <StackPanel Margin="0,0,24,0">
+                            <StackPanel Grid.Column="1">
                                 <TextBlock x:Name="MemNow" Style="{StaticResource BigNumber}"
                                            Foreground="{StaticResource TextMain}" Text="—"/>
                                 <TextBlock Text="显存时钟" Style="{StaticResource BigSub}"
                                            Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
                             </StackPanel>
-                            <StackPanel>
+                            <StackPanel Grid.Column="2">
                                 <TextBlock x:Name="UtilNow" Style="{StaticResource BigNumber}"
                                            Foreground="{StaticResource TextMain}" Text="—"/>
                                 <TextBlock Text="占用率" Style="{StaticResource BigSub}"
                                            Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
                             </StackPanel>
-                        </StackPanel>
+                        </Grid>
 
                         <!--
                             Same shape as the power card's control row: the low end of the range on the

@@ -744,7 +744,7 @@ namespace NvpwrControl
 
 			bool supported = v.Equals(SUPPORTED_DRIVER, StringComparison.OrdinalIgnoreCase);
 			DriverText.Text = v;
-			DriverText.SetResourceReference(TextBlock.ForegroundProperty, supported ? "TextMain" : "Danger");
+			DriverText.SetResourceReference(TextBlock.ForegroundProperty, supported ? "Accent" : "Danger");
 			DriverText.ToolTip = supported
 				? ("本程序只适配 " + SUPPORTED_DRIVER + " 版本的 NVIDIA 驱动。\r\n当前版本匹配。")
 				: ("当前驱动 " + v + " 不是本程序适配的 " + SUPPORTED_DRIVER + "。\r\n\r\n" +
