@@ -92,6 +92,19 @@ if (Test-Path $mvolt) {
 }
 
 # --- 说明 ---
+#
+# Two documents, for two readers. 使用说明 is the one that ships to whoever receives the
+# package — prerequisites, install steps, and the things that bite (Defender deleting the
+# loader, VBS and EfiGuard being mutually exclusive). 流程说明 is the implementation record
+# and is only useful to someone working on the code.
+$manual = Join-Path $root 'docs\使用说明.txt'
+if (Test-Path $manual) {
+    Copy-Item $manual $OutDir -Force
+    Step "使用说明.txt"
+} else {
+    Step "⚠ 未找到 docs\使用说明.txt —— 发布包将没有使用说明"
+}
+
 $readme = Join-Path $root 'POWER_UNLOCK_FLOW.md'
 if (Test-Path $readme) {
     Copy-Item $readme (Join-Path $OutDir '流程说明.md') -Force
