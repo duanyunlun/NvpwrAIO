@@ -399,7 +399,7 @@
                             -->
                             <TextBlock Style="{StaticResource Caption}" Foreground="{StaticResource TextDim}"
                                        VerticalAlignment="Center" Margin="12,0,0,0"
-                                       Text="核心与显存之间的交换网络，显存敏感场景提速较有效"
+                                       Text="核心-显存的交换网络"
                                        ToolTip="XBAR 是 GPU 内部把核心和显存连起来的交换网络，进出显存的数据都经过它。&#10;对显存敏感的场景（高分辨率、大纹理）提速可能有效；纯计算场景收益很小。&#10;调高后若出现花屏或驱动重置，回退频率，或给电压卡片里的「XBAR 电压偏移」加点电压。"/>
                         </StackPanel>
 
@@ -545,7 +545,7 @@
                         </Grid>
 
                         <TextBlock Style="{StaticResource RowLabel}" Margin="0,10,0,0" TextTrimming="CharacterEllipsis"
-                                   Text="XBAR 电压偏移 · 核心与显存之间的交换网络" ToolTip="XBAR 是 GPU 内部把核心和显存连起来的交换网络，进出显存的数据都经过它。&#10;这一项给这块网络请求更多或更少的电压：升压让更高的 XBAR 频率更稳，降压可在原频率下省电。&#10;它可能与其它模块共用供电，实际电压不一定完全跟随请求。范围 -25…+50 mV。"/>
+                                   Text="XBAR 电压偏移 · 核心-显存的交换网络" ToolTip="XBAR 是 GPU 内部把核心和显存连起来的交换网络，进出显存的数据都经过它。&#10;这一项给这块网络请求更多或更少的电压：升压让更高的 XBAR 频率更稳，降压可在原频率下省电。&#10;它可能与其它模块共用供电，实际电压不一定完全跟随请求。范围 -25…+50 mV。"/>
                         <Slider x:Name="XbarSlider" Minimum="-25" Maximum="50" Value="0"
                                 TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
                                 ValueChanged="OnXbarSliderChanged"/>
