@@ -924,10 +924,17 @@ namespace NvpwrControl
             int? hvci = ReadDword(@"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity", "Enabled");
             bool vbsOn = vbs == 1 || hvci == 1;
 
-            // Whether the firmware is what keeps VBS off. Reported, not enforced: the chip stays
-            // clickable, because the reading is a guess at the cause and the user may know better
-            // — and because hiding the only route back would be worse than a click that does not
-            // stick. When it is set, the tooltip says what to expect.
+            // Clickable only while VBS is running.
+            //
+            // With it running, EfiGuard cannot be in effect — the two are mutually exclusive,
+            // measured over every boot on the reference machine — so switching it off is the one
+            // action here that leads anywhere, and it is the step that lets the driver load at all.
+            //
+            // With it already off there is nothing to offer. Turning it back on would last until
+            // the next boot, because a boot through EfiGuard is what makes Windows disable it:
+            // observed on every EfiGuard boot, including three where the registry was set to 1
+            // immediately beforehand and came back as 0. A control that writes a value its own
+            // other component undoes is not a control.
             bool vbsLocked = FirmwareVbsLocked();
 
             list.Add(new UnlockCheck
@@ -938,15 +945,20 @@ namespace NvpwrControl
                 Detail = vbsOn
                     ? "已开启"
                     : (vbs == null && hvci == null ? "未知" : "已关闭"),
-                ActionId = "vbs",
-                ClickAction = vbsOn ? "关闭虚拟化安全" : "恢复虚拟化安全",
+                ActionId = vbsOn ? "vbs" : null,
+                ClickAction = vbsOn ? "关闭虚拟化安全" : "",
                 ManualHint = "这一项在 Windows 安全中心里没有开关（内存完整性只是它的一个消费者，关了它 VBS 仍可能运行）。\n" +
-                             "点击会写入 EnableVirtualizationBasedSecurity=0 并执行 bcdedit /set hypervisorlaunchtype off，重启后生效。\n" +
-                             "注意：hypervisorlaunchtype off 会影响 WSL2、Windows 沙盒和部分虚拟化软件。" +
-                             (vbsLocked
-                                 ? "\n\n⚠ 上次启动时 Windows 报告 VBS 是被固件的退出标志关掉的。\n" +
-                                   "如果本次点击重启后又被重置，说明改动被固件否决，需要在 BIOS 里\n" +
-                                   "「恢复默认设置」来清除该标志。"
+                             (vbsOn
+                                 ? "点击会写入 EnableVirtualizationBasedSecurity=0 并执行 bcdedit /set hypervisorlaunchtype off，重启后生效。\n" +
+                                   "注意：hypervisorlaunchtype off 会影响 WSL2、Windows 沙盒和部分虚拟化软件。\n" +
+                                   "这也是 EfiGuard 能生效的前提 —— VBS 运行时它的内核修补会被安全内核拦下。"
+                                 : "已关闭，无需操作。\n\n" +
+                                   "为什么不能开回来：从 EfiGuard 引导时，它修补的启动链会让 Windows 判定\n" +
+                                   "启动链验证失败，于是禁用 VBS 并把注册表重置为 0。\n" +
+                                   "实测：每一次 EfiGuard 生效的启动，VBS 都被禁用；手动写的 =1 会在重启后变回 0。\n" +
+                                   "要恢复 VBS，只能在不经过 EfiGuard 的情况下启动。") +
+                             (vbsLocked && vbsOn
+                                 ? "\n\n⚠ 上次启动时 Windows 报告 VBS 是被固件的退出标志关掉的。"
                                  : "")
             });
 
