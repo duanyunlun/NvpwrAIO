@@ -924,9 +924,10 @@ namespace NvpwrControl
             int? hvci = ReadDword(@"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity", "Enabled");
             bool vbsOn = vbs == 1 || hvci == 1;
 
-            // The firmware can forbid VBS outright. When it does, nothing this program writes
-            // survives a reboot, so the chip is left unclickable rather than pretending to be
-            // a control that silently undoes itself.
+            // Whether the firmware is what keeps VBS off. Reported, not enforced: the chip stays
+            // clickable, because the reading is a guess at the cause and the user may know better
+            // — and because hiding the only route back would be worse than a click that does not
+            // stick. When it is set, the tooltip says what to expect.
             bool vbsLocked = FirmwareVbsLocked();
 
             list.Add(new UnlockCheck
@@ -937,11 +938,16 @@ namespace NvpwrControl
                 Detail = vbsOn
                     ? "已开启"
                     : (vbs == null && hvci == null ? "未知" : "已关闭"),
-                ActionId = vbsLocked ? null : "vbs",
-                ClickAction = vbsLocked ? "" : (vbsOn ? "关闭虚拟化安全" : "恢复虚拟化安全"),
+                ActionId = "vbs",
+                ClickAction = vbsOn ? "关闭虚拟化安全" : "恢复虚拟化安全",
                 ManualHint = "这一项在 Windows 安全中心里没有开关（内存完整性只是它的一个消费者，关了它 VBS 仍可能运行）。\n" +
                              "点击会写入 EnableVirtualizationBasedSecurity=0 并执行 bcdedit /set hypervisorlaunchtype off，重启后生效。\n" +
-                             "注意：hypervisorlaunchtype off 会影响 WSL2、Windows 沙盒和部分虚拟化软件。"
+                             "注意：hypervisorlaunchtype off 会影响 WSL2、Windows 沙盒和部分虚拟化软件。" +
+                             (vbsLocked
+                                 ? "\n\n⚠ 上次启动时 Windows 报告 VBS 是被固件的退出标志关掉的。\n" +
+                                   "如果本次点击重启后又被重置，说明改动被固件否决，需要在 BIOS 里\n" +
+                                   "「恢复默认设置」来清除该标志。"
+                                 : "")
             });
 
             // Vulnerable driver blocklist. Required off for this program because the driver is
