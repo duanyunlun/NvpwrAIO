@@ -258,7 +258,7 @@ namespace NvpwrControl
 				};
 				textBlock.SetResourceReference(TextBlock.ForegroundProperty, name);
 				border.Child = textBlock;
-				string text2 = PrerequisiteExplanation(item.Name, item);
+				string text2 = PrerequisiteExplanation(item);
 				if (flag)
 				{
 					text2 += "\n\n点击可切换（需要管理员权限，改动后需重启生效）。";
@@ -283,7 +283,7 @@ namespace NvpwrControl
 		private void OnPrerequisiteClick(UnlockCheck c)
 		{
 			/*
-				These chips are toggles, so the direction depends on what is there now and the
+				The rest are toggles, so the direction depends on what is there now and the
 				confirmation has to say which way it is going. A single pair of verbs derived from
 				Ok does not work, because the chips do not all mean the same thing by Ok: for most
 				of them it means the setting is already where the driver needs it and the click
@@ -312,20 +312,19 @@ namespace NvpwrControl
 			}
 		}
 
-		private static string PrerequisiteExplanation(string name, UnlockCheck c)
+		/// <summary>
+		/// The chip's tooltip.
+		///
+		/// ManualHint is preferred when present. The switch that used to be here keyed off the
+		/// check's name, and the checks have been through several revisions — the names it knew
+		/// about (测试签名, 内存完整性, 测试证书, 驱动签名) no longer exist, so every current chip
+		/// fell through to the bare detail line and the tooltips said nothing about what the item
+		/// was for or what to do about it.
+		/// </summary>
+		private static string PrerequisiteExplanation(UnlockCheck c)
 		{
-			return name switch
-			{
-				"Secure Boot" => "Secure Boot 开启时会锁住测试签名标志，bcdedit 会拒绝修改（提示“受 Secure Boot 策略保护”）。\n需要在 BIOS 里关闭，然后重启。\n当前：" + c.Detail, 
-				"测试签名" => "内核驱动是本项目自签名（测试证书）的，Windows 只在此标志开启时允许加载。\n命令：bcdedit /set testsigning on（需管理员，且 Secure Boot 已关闭），之后重启。\n当前：" + c.Detail, 
-				"内存完整性" => "内存完整性（HVCI）会拦截未由微软签名的内核代码，开着的话测试签名驱动会被拒绝。\n位置：Windows 安全中心 → 设备安全性 → 内核隔离。\n当前：" + c.Detail, 
-				"驱动黑名单" => "微软的易受攻击驱动黑名单。本驱动不在名单里，正常不影响加载，仅作为排查信息。\n当前：" + c.Detail, 
-				"测试证书" => "自签名证书需同时装入“受信任的根证书颁发机构”与“受信任的发布者”。\n缺任意一个，驱动都会被判定为签名不受信任。\n当前：" + c.Detail, 
-				"驱动签名" => "Nvpwr.sys 本身的签名校验结果。Valid 表示证书链完整。\n注意：签名有效不等于驱动能加载——Secure Boot 仍然会拦。\n当前：" + c.Detail, 
-				_ => "当前：" + c.Detail, 
-			};
+			return string.IsNullOrEmpty(c.ManualHint) ? ("当前：" + c.Detail) : c.ManualHint;
 		}
-
 		private void OnLoaded(object sender, RoutedEventArgs e)
 		{
 			//IL_0120: Unknown result type (might be due to invalid IL or missing references)

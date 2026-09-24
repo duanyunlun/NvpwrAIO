@@ -870,32 +870,36 @@ namespace NvpwrControl
             });
 
             /*
-                EfiGuard, sitting next to Secure Boot because it is the other item that cannot be
-                changed from this program.
+                EfiGuard, next to Secure Boot because it is the other item with nothing this
+                program can do about it.
 
-                The two are grouped by what the user can do about them rather than by what they
-                are about: these two have to be dealt with elsewhere (firmware, boot entry), and
-                the three below them can all be toggled right here. Mixing the two kinds together
-                made the row read as five settings of the same sort, when only three of them are.
+                It is deliberately not clickable. Everything about it was tried:
 
-                Without EfiGuard there is no way to load a self-signed driver short of test-signing
-                mode, which needs a reboot and leaves a marker anti-cheat software reads.
+                  Copying the loader in is possible, and that part is automated by being absent —
+                  the package ships the files and the notes say where they go.
+
+                  Removing the loader does disable it: the firmware tries the entry, fails, and
+                  boots Windows instead. But the firmware also drops the entry when that happens,
+                  and putting the file back does not put the entry back. A control that only
+                  works one way is worse than no control.
+
+                  Reordering with bcdedit reports success and changes what bcdedit displays, and
+                  the firmware ignores it, because the order it boots from is its own. Writing the
+                  UEFI variables directly is refused with 1314 even with
+                  SeSystemEnvironmentPrivilege enabled.
+
+                So this is a status light with an explanation attached. The tooltip carries the
+                detail and the step the user has to take.
             */
-            bool efiPresent = File.Exists(Path.Combine(
-                Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName), "EfiDSEFix.exe"));
-            bool efiBooted = efiPresent && DseControl.IsBooted();
+            EfiGuardSetup.Status efi = EfiGuardSetup.Detect();
             list.Add(new UnlockCheck
             {
                 Name = "EfiGuard",
-                Ok = efiBooted,
-                Blocking = !efiBooted,
-                Detail = !efiPresent ? "未找到 EfiDSEFix.exe"
-                                     : (efiBooted ? "已生效" : "已安装，但本次未经它引导"),
+                Ok = efi.ActiveThisBoot,
+                Blocking = !efi.ActiveThisBoot,
+                Detail = EfiGuardSetup.Describe(efi),
                 ActionId = null,
-                ManualHint = efiPresent
-                    ? "本次启动没有经过 EfiGuard，无法临时关闭驱动签名强制。\n" +
-                      "请重启并从 EfiGuard 启动项进入系统。"
-                    : "EfiDSEFix.exe 需要与本程序放在同一目录。"
+                ManualHint = EfiGuardSetup.Hint(efi)
             });
 
             /*
