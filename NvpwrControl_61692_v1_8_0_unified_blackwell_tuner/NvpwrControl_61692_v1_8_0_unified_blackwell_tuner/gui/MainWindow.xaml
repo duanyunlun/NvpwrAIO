@@ -109,6 +109,20 @@
             <Setter Property="Width" Value="66"/>
         </Style>
 
+        <!--
+            The power target keeps the weight it had as a readout — it is the number the whole
+            card is about — but is a field now. Sized for three digits, which is the widest the
+            ceiling can be on any supported profile.
+        -->
+        <Style x:Key="PowerInput" TargetType="TextBox" BasedOn="{StaticResource Input}">
+            <Setter Property="FontSize" Value="20"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="{StaticResource Warn}"/>
+            <Setter Property="Width" Value="66"/>
+            <Setter Property="Padding" Value="3,1"/>
+            <Setter Property="BorderBrush" Value="{StaticResource FieldBorder}"/>
+        </Style>
+
         <Style x:Key="Btn" TargetType="Button">
             <Setter Property="Foreground" Value="{StaticResource TextMain}"/>
             <Setter Property="Background" Value="#2D3748"/>
@@ -330,9 +344,25 @@
                                        VerticalAlignment="Center" Margin="0,0,7,0" Text="—"/>
                             <Button x:Name="PwMinus" Content="−" Style="{StaticResource Step}"
                                     Click="OnPowerMinus"/>
-                            <TextBlock x:Name="PwTargetNow" Style="{StaticResource BigNumber}" FontSize="20"
-                                       Foreground="{StaticResource Warn}" Text="0 W"
-                                       MinWidth="66" TextAlignment="Center" Margin="2,0,2,0"/>
+                            <!--
+                                Typed, not only stepped. 25 W at a time is fine for finding a
+                                ceiling and useless for the last few watts, which is what tuning
+                                actually needs. The field and its unit share one centred group:
+                                sizing the box on its own left the " W" hanging toward the plus
+                                button and the reading looked off-centre between the two steps.
+                            -->
+                            <Grid Width="116" Margin="3,0,3,0">
+                                <StackPanel Orientation="Horizontal"
+                                            HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <TextBox x:Name="PwTargetNow" Style="{StaticResource PowerInput}"
+                                             PreviewTextInput="OnClockIntegerOnly"
+                                             KeyDown="OnPowerTargetKey"
+                                             LostFocus="OnPowerTargetCommit"/>
+                                    <TextBlock Text="W" Style="{StaticResource BigNumber}" FontSize="20"
+                                               Foreground="{StaticResource Warn}" VerticalAlignment="Center"
+                                               Margin="2,0,0,0" IsHitTestVisible="False"/>
+                                </StackPanel>
+                            </Grid>
                             <Button x:Name="PwPlus" Content="+" Style="{StaticResource Step}" Click="OnPowerPlus"/>
                             <TextBlock x:Name="PwMaxLabel" Style="{StaticResource Caption}"
                                        Foreground="{StaticResource Danger}" FontWeight="SemiBold"

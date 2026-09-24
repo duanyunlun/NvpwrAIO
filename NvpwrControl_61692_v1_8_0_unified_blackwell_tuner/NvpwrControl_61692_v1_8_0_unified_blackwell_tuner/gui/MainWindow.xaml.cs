@@ -410,7 +410,12 @@ namespace NvpwrControl
 		private void FillCardNotes()
 		{
 			Driver.ProfileRange(_profile, _state.CeilingMw, out var loMw, out var hiMw);
-			Tip(PwTargetNow, string.Format(CultureInfo.InvariantCulture, "你要申请的功耗上限，用左右两个按钮以 {0} W 为步进调整。\n本机型策略窗口：可申请 {1}–{2} W。\n超出窗口会被内核模块直接拒绝；在窗口内也可能被驱动压到更低的生效值。\n0 W 表示恢复出厂上限。", 25, loMw / 1000, hiMw / 1000));
+			Tip(PwTargetNow, string.Format(CultureInfo.InvariantCulture,
+				"你要申请的功耗上限。可以直接输入数字，也可以用左右两个按钮以 {0} W 为步进调整。\n" +
+				"本机型可申请范围：{1}–{2} W。输入超出范围会被收到边界上，不是 5 的整数倍会就近取整。\n" +
+				"输入后按回车或点到别处即生效（这只改申请值，还要点「应用」才会真正下发）。\n" +
+				"申请值 ≠ 生效值：驱动可能因为机型策略、温度或供电压到更低，真实值看左边的「当前上限」。",
+				25, loMw / 1000, hiMw / 1000));
 			PwMaxLabel.Text = hiMw / 1000 + " W";
 			Tip(PwFloorLabel, _powerFloorW + " W —— 这是从机器读取的出厂功耗墙，也就是这张卡的默认功率。\n内核模块的 OemBaseline 优先，读不到时用 NVML 的生效上限。\n它不是固定数字：不同机型/不同 VBIOS 会不一样。");
 			Tip(PwFloorLabel, _powerFloorW + "（W）—— 出厂功耗墙，也就是这张卡的默认功率。\n再往下调没有意义：下限就到这里，减号会停住。\n（内核模块允许的最小申请值是 " + loMw / 1000 + " W，但那张卡的实际功耗墙是 " + _powerFloorW + " W。）");
@@ -791,22 +796,130 @@ private static string Fmt(double v, string unit)
 			return ((double)mw / 1000.0).ToString("0.0", CultureInfo.InvariantCulture) + " W";
 		}
 
+		// ------------------------------------------------------------------ power target
+
+		/// <summary>
+		/// The window the kernel will accept, in whole watts.
+		///
+		/// Two lower bounds exist and the larger wins. The profile window is what the kernel
+		/// module accepts for this GPU; the factory wall is what the card was built for, and
+		/// asking below it is pointless rather than dangerous. On the reference machine both
+		/// are 175 W, so they agree, but they come from different places and either could move.
+		/// </summary>
+		private void PowerWindow(out int lo, out int hi)
+		{
+			uint ceiling = ((_state.CeilingMw != 0) ? _state.CeilingMw : 350000u);
+			uint loMw, hiMw;
+			Driver.ProfileRange(_profile, ceiling, out loMw, out hiMw);
+			lo = (int)(loMw / 1000);
+			hi = (int)(hiMw / 1000);
+			if (lo < _powerFloorW) lo = _powerFloorW;
+			if (hi < lo) hi = lo;
+		}
+
+		/// <summary>Writes the pending target into the field, formatted the way it is entered.</summary>
+		private void ShowPowerTarget()
+		{
+			if (PwTargetNow != null)
+			{
+				PwTargetNow.Text = _targetW.ToString(CultureInfo.InvariantCulture);
+			}
+		}
+
+		/// <summary>
+		/// Reads what was typed, brings it inside the window, and snaps it to the step the
+		/// kernel quantises to.
+		///
+		/// Clamped rather than refused. Someone who types 400 meant "as high as it goes", and
+		/// someone who types 213 meant 215 — the kernel only accepts multiples of 5, which is
+		/// why the buttons step by 25 and why a typed number is rounded rather than rejected
+		/// with a complaint. Whatever is adjusted is said out loud underneath, because a field
+		/// that silently rewrites what you typed is worse than one that refuses it.
+		/// </summary>
+		private void CommitPowerTarget()
+		{
+			if (PwTargetNow == null) return;
+
+			int typed;
+			if (!int.TryParse(PwTargetNow.Text.Trim(), NumberStyles.Integer,
+					  CultureInfo.InvariantCulture, out typed))
+			{
+				ShowPowerTarget();
+				return;
+			}
+
+			int lo, hi;
+			PowerWindow(out lo, out hi);
+
+			int wanted = Math.Max(lo, Math.Min(hi, typed));
+			int snapped = (int)(Math.Round(wanted / 5.0, MidpointRounding.AwayFromZero) * 5.0);
+			if (snapped < lo) snapped = lo;
+			if (snapped > hi) snapped = hi;
+
+			_targetW = snapped;
+			ShowPowerTarget();
+
+			if (PwHint != null)
+			{
+				if (typed != snapped)
+				{
+					PwHint.Text = "已调整为 " + snapped + " W（可调范围 " + lo + "–" + hi +
+								  " W，步进 5 W）。";
+				}
+				else
+				{
+					PwHint.Text = "";
+				}
+			}
+		}
+
+		private void OnPowerTargetCommit(object sender, RoutedEventArgs e)
+		{
+			CommitPowerTarget();
+		}
+
+		private void OnPowerTargetKey(object sender, KeyEventArgs e)
+		{
+			if (e.Key == Key.Enter)
+			{
+				CommitPowerTarget();
+				e.Handled = true;
+			}
+			else if (e.Key == Key.Escape)
+			{
+				// Put back what was there and leave the field, so a half-typed value cannot
+				// be left sitting in a control that looks like an applied setting.
+				ShowPowerTarget();
+				PwHint.Text = "";
+				Keyboard.ClearFocus();
+				PwPlus.Focus();
+				e.Handled = true;
+			}
+		}
+
 		private void OnPowerMinus(object sender, RoutedEventArgs e)
 		{
-			_targetW = Math.Max(_powerFloorW, _targetW - 25);
-			PwTargetNow.Text = _targetW + " W";
+			int lo, hi;
+			PowerWindow(out lo, out hi);
+			_targetW = Math.Max(lo, _targetW - POWER_STEP_W);
+			PwHint.Text = "";
+			ShowPowerTarget();
 		}
 
 		private void OnPowerPlus(object sender, RoutedEventArgs e)
 		{
-			_targetW = Math.Min(350, _targetW + 25);
-			PwTargetNow.Text = _targetW + " W";
+			int lo, hi;
+			PowerWindow(out lo, out hi);
+			_targetW = Math.Min(hi, _targetW + POWER_STEP_W);
+			PwHint.Text = "";
+			ShowPowerTarget();
 		}
 
 		private void OnPowerReset(object sender, RoutedEventArgs e)
 		{
 			_targetW = _powerFloorW;
-			PwTargetNow.Text = _targetW + " W";
+			PwHint.Text = "";
+			ShowPowerTarget();
 		}
 
 		private void OnApplyPower(object sender, RoutedEventArgs e)
@@ -1268,7 +1381,7 @@ private static string Fmt(double v, string unit)
 
 		private void PushStateToControls()
 		{
-			PwTargetNow.Text = _targetW + " W";
+			ShowPowerTarget();
 			UpdateVoltOffsetLabel();
 			ClkCore.Text = _state.Clock.CoreOffsetMhz.ToString(CultureInfo.InvariantCulture);
 			ClkMem.Text = _state.Clock.MemoryOffsetMhz.ToString(CultureInfo.InvariantCulture);
