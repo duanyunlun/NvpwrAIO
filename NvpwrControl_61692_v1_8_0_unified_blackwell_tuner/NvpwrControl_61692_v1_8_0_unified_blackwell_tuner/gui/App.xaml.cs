@@ -24,7 +24,7 @@ namespace NvpwrControl
             {
                 Store.Log("未处理异常: " + args.Exception);
                 MessageBox.Show("程序发生未处理异常：\r\n\r\n" + args.Exception.Message,
-                                "Nvpwr 控制台", MessageBoxButton.OK, MessageBoxImage.Error);
+                                "NV显卡功耗软解", MessageBoxButton.OK, MessageBoxImage.Error);
                 args.Handled = true;
             };
         }

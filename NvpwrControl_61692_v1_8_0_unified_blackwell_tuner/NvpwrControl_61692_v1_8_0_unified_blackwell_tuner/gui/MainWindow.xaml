@@ -1,7 +1,7 @@
 <Window x:Class="NvpwrControl.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Nvpwr Control 1.9.0"
+        Title="NV显卡功耗软解"
         Width="873" Height="756"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
@@ -213,10 +213,21 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="NVPWR" FontSize="17" FontWeight="Bold"
-                               Foreground="{StaticResource TextMain}" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="SubtitleText" Text="笔记本显卡功耗控制" FontSize="12"
-                               Foreground="{StaticResource TextMuted}" Margin="12,0,0,0"
+                    <!--
+                        The window title already carries the program name, so the heading here is
+                        used for the thing a reader needs to check before trusting anything below
+                        it: the driver build. That is the one hard requirement this program has,
+                        and it cannot be worked around — the kernel helper reads and writes the
+                        power policy at offsets taken from the 616.92 internal layout, so another
+                        build would have it writing into whatever sits at those offsets.
+                    -->
+                    <TextBlock Text="驱动" FontSize="12" Foreground="{StaticResource TextMuted}"
+                               VerticalAlignment="Center"/>
+                    <TextBlock x:Name="DriverText" Text="—" FontSize="17" FontWeight="Bold"
+                               Foreground="{StaticResource TextMain}" Margin="8,0,0,0"
+                               VerticalAlignment="Center"/>
+                    <TextBlock x:Name="SubtitleText" Text="" FontSize="12"
+                               Foreground="{StaticResource TextMuted}" Margin="14,0,0,0"
                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                 </StackPanel>
 
@@ -325,7 +336,17 @@
                              stepper row shape, and a card of its own held four controls with a lot
                              of empty space below them. -->
                         <Border Height="1" Background="{StaticResource CardBorder}" Margin="0,16,0,0"/>
+
+                        <!-- The frequency block below the divider gets a heading of its own, in
+                             the same shape as the one at the top of the card, so the card reads
+                             as two sections rather than one list that changes subject. -->
                         <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                            <Border Width="3" CornerRadius="2" Margin="0,1,8,1"
+                                    Background="{StaticResource Warn}"/>
+                            <TextBlock Text="频率" Style="{StaticResource SectionTitle}"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                             <StackPanel Margin="0,0,24,0">
                                 <TextBlock x:Name="ClkNow" Style="{StaticResource BigNumber}"
                                            Foreground="{StaticResource TextMain}" Text="—"/>
@@ -404,10 +425,10 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                            <Button Content="应用频率" Style="{StaticResource BtnPrimary}" MinWidth="100"
-                                    Click="OnApplyClocks"/>
-                            <Button Content="重置" Style="{StaticResource BtnDanger}" Margin="0"
-                                    Click="OnResetClocks"/>
+                            <Button Content="重置" Style="{StaticResource BtnDanger}" Padding="10,7"
+                                    Margin="0,0,7,0" Click="OnResetClocks"/>
+                            <Button Content="应用" Style="{StaticResource BtnPrimary}" MinWidth="48"
+                                    Padding="9,7" Margin="0" Click="OnApplyClocks"/>
                         </StackPanel>
 
                     </StackPanel>
@@ -565,10 +586,10 @@
                              right, where it cannot be hit by mistake while reaching for 应用. -->
                         <Grid Margin="0,12,0,0">
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
-                                <Button Content="清零" Style="{StaticResource BtnDanger}" Padding="12,7"
-                                        Click="OnVoltReset"/>
-                                <Button Content="应用" Style="{StaticResource BtnPrimary}" MinWidth="64"
-                                        Padding="12,7" Margin="8,0,0,0" Click="OnApplyVoltage"/>
+                                <Button Content="清零" Style="{StaticResource BtnDanger}" Padding="10,7"
+                                        Margin="0,0,7,0" Click="OnVoltReset"/>
+                                <Button Content="应用" Style="{StaticResource BtnPrimary}" MinWidth="48"
+                                        Padding="9,7" Margin="0" Click="OnApplyVoltage"/>
                             </StackPanel>
                             <Button Content="打开 mVolt+" Style="{StaticResource BtnGhost}"
                                     HorizontalAlignment="Right" Click="OnOpenMVoltFull"/>

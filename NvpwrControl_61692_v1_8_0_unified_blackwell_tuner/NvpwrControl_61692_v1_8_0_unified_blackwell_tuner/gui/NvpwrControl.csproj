@@ -48,8 +48,8 @@
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <Version>1.9.0</Version>
-    <Product>Nvpwr Control</Product>
-    <AssemblyTitle>Nvpwr Control 1.9.0</AssemblyTitle>
+    <Product>NV显卡功耗软解</Product>
+    <AssemblyTitle>NV显卡功耗软解</AssemblyTitle>
   </PropertyGroup>
 
   <ItemGroup>

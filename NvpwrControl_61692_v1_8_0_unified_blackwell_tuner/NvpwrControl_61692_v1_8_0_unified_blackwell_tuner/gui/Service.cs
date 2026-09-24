@@ -20,7 +20,7 @@ namespace NvpwrControl
     {
         public const string Name = "NvpwrSvc";
         public const string DriverName = "Nvpwr";
-        public const string DisplayName = "Nvpwr Control Background Service";
+        public const string DisplayName = "NV显卡功耗软解 后台服务";
 
         /// <summary>
         /// Full path of this executable.
@@ -68,7 +68,7 @@ namespace NvpwrControl
             catch
             {
                 MessageBox.Show("需要管理员权限才能控制驱动。请右键“以管理员身份运行”。",
-                                "Nvpwr 控制台", MessageBoxButton.OK, MessageBoxImage.Error);
+                                "NV显卡功耗软解", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             return false;
         }

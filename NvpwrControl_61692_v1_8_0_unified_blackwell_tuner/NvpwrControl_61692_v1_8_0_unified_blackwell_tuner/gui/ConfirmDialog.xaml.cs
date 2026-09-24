@@ -28,7 +28,7 @@ namespace NvpwrControl
         /// </summary>
         public static bool Ask(Window owner, string message, bool withCancel)
         {
-            return Ask(owner, "Nvpwr 控制台", message, withCancel, warning: true);
+            return Ask(owner, "NV显卡功耗软解", message, withCancel, warning: true);
         }
 
         public static bool Ask(Window owner, string title, string message, bool withCancel, bool warning)

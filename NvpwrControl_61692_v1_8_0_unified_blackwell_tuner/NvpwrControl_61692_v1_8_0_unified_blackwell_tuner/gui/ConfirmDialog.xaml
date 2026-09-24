@@ -1,7 +1,7 @@
 <Window x:Class="NvpwrControl.ConfirmDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Nvpwr 控制台"
+        Title="NV显卡功耗软解"
         Width="500"
         SizeToContent="Height"
         MaxHeight="680"
@@ -141,7 +141,7 @@
                 <StackPanel Orientation="Horizontal">
                     <Border x:Name="TitleAccent" Width="3" CornerRadius="2" Margin="0,1,10,1"
                             Background="{StaticResource AccentBlue}"/>
-                    <TextBlock x:Name="TitleText" Text="Nvpwr 控制台" FontSize="14"
+                    <TextBlock x:Name="TitleText" Text="NV显卡功耗软解" FontSize="14"
                                FontWeight="SemiBold" Foreground="{StaticResource HeadingFg}"
                                VerticalAlignment="Center"/>
                 </StackPanel>

@@ -42,6 +42,17 @@ namespace NvpwrControl
 		/// Step for the clock offset steppers, matching the power card coarse steps. The middle
 		/// field is typed as well, so this is for nudging rather than for getting there.
 		/// </summary>
+		/// <summary>
+		/// The NVIDIA driver build this program is written against.
+		///
+		/// Not a preference. The kernel helper reads and writes the power policy at offsets taken
+		/// from this build's internal layout — which is why the driver carries an exact-build guard
+		/// of its own — so on any other build it would be writing into whatever sits at those
+		/// offsets. The version is shown in the header and turns red when it does not match, so the
+		/// mismatch is visible before anything is applied rather than discovered as a crash.
+		/// </summary>
+		private const string SUPPORTED_DRIVER = "616.92";
+
 		private const int CLK_STEP_MHZ = 50;
 
 		private const int VOLT_MIN_MV = -25;
@@ -330,7 +341,7 @@ namespace NvpwrControl
 			//IL_0120: Unknown result type (might be due to invalid IL or missing references)
 			//IL_0125: Unknown result type (might be due to invalid IL or missing references)
 			//IL_013e: Expected O, but got Unknown
-			Store.Log("NvpwrControl 1.9.0 (WPF) 启动");
+			Store.Log("NV显卡功耗软解 1.9.0 启动");
 			CenterOnWorkArea();
 			_gpuName = DetectGpu();
 			_profile = Driver.DetectProfile(_gpuName);
@@ -711,9 +722,37 @@ namespace NvpwrControl
 			bool flag = Tuning.TryReadVoltageUv(out microVolts, out error);
 			VoltNow.Text = (flag ? (((double)microVolts / 1000000.0).ToString("0.000", CultureInfo.InvariantCulture) + " V") : "—");
 			VoltNow.SetResourceReference(TextBlock.ForegroundProperty, flag ? "Info" : "TextDim");
+			RefreshDriverVersion(envSample);
 		}
 
-		private static string Fmt(double v, string unit)
+				/// <summary>
+		/// Puts the driver build in the header, in red when it is not the supported one.
+		///
+		/// Red rather than a footnote: on an unsupported build nothing else in this window can
+		/// be trusted to mean what it says, so it is the first thing worth seeing.
+		/// </summary>
+		private void RefreshDriverVersion(EnvSample env)
+		{
+			string v = env.DriverVersion;
+			if (string.IsNullOrEmpty(v))
+			{
+				DriverText.Text = "—";
+				DriverText.SetResourceReference(TextBlock.ForegroundProperty, "TextDim");
+				DriverText.ToolTip = "读不到驱动版本。";
+				return;
+			}
+
+			bool supported = v.Equals(SUPPORTED_DRIVER, StringComparison.OrdinalIgnoreCase);
+			DriverText.Text = v;
+			DriverText.SetResourceReference(TextBlock.ForegroundProperty, supported ? "TextMain" : "Danger");
+			DriverText.ToolTip = supported
+				? ("本程序只适配 " + SUPPORTED_DRIVER + " 版本的 NVIDIA 驱动。\r\n当前版本匹配。")
+				: ("当前驱动 " + v + " 不是本程序适配的 " + SUPPORTED_DRIVER + "。\r\n\r\n" +
+				   "内核驱动按 " + SUPPORTED_DRIVER + " 的内部布局读写功耗策略，版本不符时偏移会错位，" +
+				   "因此不会尝试下发。请安装 " + SUPPORTED_DRIVER + " 版本的驱动。");
+		}
+
+private static string Fmt(double v, string unit)
 		{
 			return v.ToString("0.#", CultureInfo.InvariantCulture) + unit;
 		}
