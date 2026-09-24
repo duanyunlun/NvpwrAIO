@@ -276,7 +276,24 @@ namespace NvpwrControl
         /// </summary>
         public static bool EnsureLoaded(int factoryFloorW, out string error)
         {
+            bool restarted;
+            return EnsureLoaded(factoryFloorW, out restarted, out error);
+        }
+
+        /// <summary>
+        /// As above, and reports whether the display device had to be restarted to get there.
+        ///
+        /// The caller needs to know. A restart reloads nvlddmkm, which discards everything held
+        /// in its runtime state — the power ceiling, but equally the voltage and clock offsets
+        /// that mVolt and NVAPI wrote into the same driver. Measured: a power change that went
+        /// through a restart left the rail back at its factory limits while the interface still
+        /// showed the offsets that had been applied. Whoever asked for the restart has to put
+        /// those back afterwards, and only the caller knows what they were.
+        /// </summary>
+        public static bool EnsureLoaded(int factoryFloorW, out bool deviceRestarted, out string error)
+        {
             error = null;
+            deviceRestarted = false;
 
             if (!DseControl.IsAvailable())
             {
@@ -301,6 +318,8 @@ namespace NvpwrControl
                             " W，需要先重启显卡设备才能重新调整，但重启失败。\n\n" + error;
                     return false;
                 }
+                deviceRestarted = true;
+                Store.Log("已重置显卡设备（功耗墙 " + wall + " W → 出厂值）；电压与频率需要重新下发");
             }
 
             bool dseOff = false;

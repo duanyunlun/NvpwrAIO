@@ -945,7 +945,7 @@ private static string Fmt(double v, string unit)
 					return false;
 				}
 			}
-			if (num > 225000 && !Confirm("确认应用 " + watts + " W？\r\n\r\n这超过本类机型已验证的上限。\r\n\r\n提高功耗上限会增加 GPU、供电模块、显存与整机散热的电气和热负荷，电源适配器可能无法长期支撑。"))
+			if (num > 225000 && !Confirm("确认应用 " + watts + " W？\r\n\r\n这超过本类机型已验证的上限。\r\n\r\n提高功耗上限会增加 GPU、供电模块、显存与整机散热的电气和热负荷，电源适配器可能无法长期支撑。\r\n\r\n注意：如果本次开机中已经改过功耗上限，应用前会先重置一次显卡设备，屏幕会黑几秒、程序会短暂无响应 —— 这是必须的步骤，不是故障。"))
 			{
 				return false;
 			}
@@ -964,44 +964,147 @@ private static string Fmt(double v, string unit)
 				has been changed, so a rail that is no longer at the factory value has to be put
 				back before a fresh helper can be loaded at all.
 			*/
-			if (!Driver.IsOpenable() && !UnlockChain.EnsureLoaded(_powerFloorW, out error))
+			/*
+				The refresh tick has to be off for everything below it.
+
+				EnsureLoaded may restart the display device — that is how the helper gets back to a
+				factory baseline once the ceiling has been changed — and the tick reads the GPU
+				through NVML and NVAPI every second. Those are native calls into a driver that is
+				in the middle of being torn down, and they do not fail politely: measured, this
+				crashed the process with an access violation inside coreclr at 0x1d4089 while the
+				card was being removed. The screen going black for a few seconds is the restart
+				itself and is expected; the process dying was not.
+
+				Stopped here rather than inside EnsureLoaded so it covers the applies that follow
+				too, and resumed in a finally so no early return can leave the window frozen.
+			*/
+			SuspendRefresh();
+			try
 			{
-				Warn(error);
-				return false;
+				bool deviceRestarted = false;
+				if (!Driver.IsOpenable() &&
+					!UnlockChain.EnsureLoaded(_powerFloorW, out deviceRestarted, out error))
+				{
+					Warn(error);
+					return false;
+				}
+
+				if (num == 0 || watts <= _powerFloorW)
+				{
+					Store.SetRestorePoint("恢复出厂前", _state);
+					if (!Driver.Restore(out error))
+					{
+						Warn(error);
+						return false;
+					}
+					_state.PowerEnabled = false;
+					_state.PowerMw = 0u;
+				}
+				else
+				{
+					Store.SetRestorePoint("应用功耗前", _state);
+					uint profile = ((_state.Profile != 0) ? _state.Profile : _profile);
+					if (!Driver.SetPower(num, num2, profile, out error))
+					{
+						Warn(error);
+						return false;
+					}
+					_state.PowerEnabled = true;
+					_state.PowerMw = num;
+				}
+				if (_state.Profile == 0)
+				{
+					_state.Profile = _profile;
+				}
+				SaveState();
+				Store.Log("应用功耗: " + watts + " W (上限 " + num2 / 1000 + " W)");
+				RefreshAll(logIt: false);
+				RefreshDriverStatus(logIt: false);
+
+				/*
+					Put the other two settings back after a restart.
+
+					Reloading nvlddmkm discards the voltage and clock offsets along with the power
+					ceiling, so a power change that needed a restart used to leave the card at its
+					factory voltage while the interface still showed what had been applied — the
+					two halves of the card disagreeing, with nothing on screen to explain it.
+
+					Only after a restart: otherwise those values are still in the driver and
+					re-sending them is pointless work.
+				*/
+				if (deviceRestarted)
+				{
+					ReapplyVoltageAndClocks();
+				}
+				return true;
+			}
+			finally
+			{
+				ResumeRefresh();
+			}
+		}
+
+		/// <summary>
+		/// Re-sends the saved voltage and clock settings, for use after the display device has
+		/// been restarted underneath them. Failures are logged rather than shown: the power
+		/// change the user asked for has already succeeded, and a modal on top of that would
+		/// read as "the whole thing failed".
+		/// </summary>
+		private void ReapplyVoltageAndClocks()
+		{
+			if (_state.Voltage.Enabled && !_state.Voltage.Nvvdd.IsZero && _mvoltReady)
+			{
+				if (MVolt.Apply(_state.MvoltPath, _state.Voltage, out var verr, out var _))
+				{
+					Store.Log("显卡设备重置后已重新下发电压");
+				}
+				else
+				{
+					Store.Log("⚠ 显卡设备重置后重新下发电压失败: " + verr);
+				}
 			}
 
-			if (num == 0 || watts <= _powerFloorW)
+			if (_state.Clock.Enabled)
 			{
-				Store.SetRestorePoint("恢复出厂前", _state);
-				if (!Driver.Restore(out error))
+				TuningState live = Tuning.Query();
+				if (live.CoreOk || live.MemoryOk || live.XbarOk)
 				{
-					Warn(error);
-					return false;
+					string cerr;
+					if (Tuning.Apply(_state.Clock, live, out cerr))
+					{
+						Store.Log("显卡设备重置后已重新下发频率");
+					}
+					else
+					{
+						Store.Log("⚠ 显卡设备重置后重新下发频率失败: " + cerr);
+					}
 				}
-				_state.PowerEnabled = false;
-				_state.PowerMw = 0u;
 			}
-			else
-			{
-				Store.SetRestorePoint("应用功耗前", _state);
-				uint profile = ((_state.Profile != 0) ? _state.Profile : _profile);
-				if (!Driver.SetPower(num, num2, profile, out error))
-				{
-					Warn(error);
-					return false;
-				}
-				_state.PowerEnabled = true;
-				_state.PowerMw = num;
-			}
-			if (_state.Profile == 0)
-			{
-				_state.Profile = _profile;
-			}
-			SaveState();
-			Store.Log("应用功耗: " + watts + " W (上限 " + num2 / 1000 + " W)");
+
 			RefreshAll(logIt: false);
-			RefreshDriverStatus(logIt: false);
-			return true;
+		}
+
+		/// <summary>
+		/// Stops the one-second refresh for the duration of a driver operation.
+		///
+		/// The tick samples the GPU through NVML and NVAPI. While a display device restart is in
+		/// progress those become calls into hardware that is going away, and the failure mode is
+		/// a crash rather than an error code — see the note in ApplyPowerRequest.
+		/// </summary>
+		private void SuspendRefresh()
+		{
+			if (_refreshTimer != null)
+			{
+				_refreshTimer.Stop();
+			}
+		}
+
+		private void ResumeRefresh()
+		{
+			if (_refreshTimer != null)
+			{
+				_refreshTimer.Start();
+			}
 		}
 
 		/// <summary>
@@ -1527,12 +1630,32 @@ private static string Fmt(double v, string unit)
 			}
 			CollectClocks(desiredState);
 			WritePendingVoltage(desiredState);
-			if (desiredState.PowerMw > 225000 && !Confirm("确认一次性应用功耗、电压与频率？\r\n\r\n目标功耗 " + _targetW + " W 超过本类机型已验证的上限。\r\n\r\n会增加 GPU、供电与整机散热的负荷。"))
+			if (desiredState.PowerMw > 225000 && !Confirm("确认一次性应用功耗、电压与频率？\r\n\r\n目标功耗 " + _targetW + " W 超过本类机型已验证的上限。\r\n\r\n会增加 GPU、供电与整机散热的负荷。\r\n\r\n注意：如果本次开机中已经改过功耗上限，应用前会先重置一次显卡设备，屏幕会黑几秒、程序会短暂无响应 —— 这是必须的步骤，不是故障。"))
 			{
 				return;
 			}
 			Store.SetRestorePoint("一键应用前", _state);
 			Store.Log(string.Format(CultureInfo.InvariantCulture, "一键应用: power={0}W voltage={1}mV clocks={2}", _targetW, _voltOffsetMv, desiredState.Clock.Enabled ? 1 : 0));
+
+			/*
+				This used to call Driver.SetPower straight away, which meant the button worked only
+				if something else had already brought the helper up. Raising the ceiling needs the
+				helper loaded, and loading it needs the factory baseline back — the same chain the
+				power card's 应用 runs. It goes through EnsureLoaded now.
+
+				Which also means it can restart the display device, so the refresh tick is stopped
+				first for the reason spelled out in ApplyPowerRequest.
+			*/
+			SuspendRefresh();
+			try
+			{
+			string error0;
+			if (desiredState.PowerEnabled && desiredState.PowerMw != 0 &&
+				!Driver.IsOpenable() && !UnlockChain.EnsureLoaded(_powerFloorW, out error0))
+			{
+				list.Add("驱动：" + error0);
+			}
+
 			string error2;
 			if (desiredState.PowerEnabled && desiredState.PowerMw != 0)
 			{
@@ -1579,6 +1702,11 @@ private static string Fmt(double v, string unit)
 			_state = desiredState;
 			SaveState();
 			RefreshAll(logIt: false);
+			}
+			finally
+			{
+				ResumeRefresh();
+			}
 			if (list.Count == 0)
 			{
 				Store.Log("一键应用: 全部环节成功");
