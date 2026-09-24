@@ -556,8 +556,41 @@ namespace NvpwrControl
 			{
 				return;
 			}
-			_baseMinMv = (int)(mVoltSnapshot.NvvddLimitMinMv - mVoltSnapshot.Nvvdd.VminUv / 1000);
-			_baseMaxMv = (int)(mVoltSnapshot.NvvddLimitMaxMv - mVoltSnapshot.Nvvdd.RelUv / 1000);
+			/*
+				The factory limits: recorded once, then never overwritten.
+
+				Deriving them from the live readings — reported limit minus the offset on that rail
+				— only holds while OV is untouched, because an active OV offset moves the reported
+				maximum without appearing in the REL value. That derivation is what turned a
+				request for 1025 into REL +5 and landed the rail on 1030.
+
+				Re-capturing whenever the offsets read as clean was no better. It races with this
+				app's own writes: right after an apply the tool reports the new maximum while the
+				offset field has not caught up, so the capture recorded 1080 as the factory value
+				and every later request was computed against it. The log shows it happening twice
+				in a row.
+
+				So the stored value wins. It is only written when there is nothing on record yet and
+				the rail is genuinely clean, which on a first run it is; otherwise the derivation is
+				used as a provisional figure without being saved, and the next tick retries.
+			*/
+			if (_state.Voltage.BaselineMaxMv > 0)
+			{
+				_baseMinMv = (int)_state.Voltage.BaselineMinMv;
+				_baseMaxMv = (int)_state.Voltage.BaselineMaxMv;
+			}
+			else
+			{
+				_baseMinMv = (int)(mVoltSnapshot.NvvddLimitMinMv - mVoltSnapshot.Nvvdd.VminUv / 1000);
+				_baseMaxMv = (int)(mVoltSnapshot.NvvddLimitMaxMv - mVoltSnapshot.Nvvdd.RelUv / 1000);
+				if (mVoltSnapshot.Nvvdd.IsZero)
+				{
+					_state.Voltage.BaselineMinMv = _baseMinMv;
+					_state.Voltage.BaselineMaxMv = _baseMaxMv;
+					Store.Log("电压基线已记录: " + _baseMinMv + "–" + _baseMaxMv + " mV");
+					SaveState();
+				}
+			}
 			_appliedMinMv = (int)mVoltSnapshot.NvvddLimitMinMv;
 			_appliedMaxMv = (int)mVoltSnapshot.NvvddLimitMaxMv;
 			if (mVoltSnapshot.NvvddMinUv > 0 && mVoltSnapshot.NvvddMaxUv > 0)
@@ -1276,6 +1309,18 @@ namespace NvpwrControl
 				Tuning.Reset(out error);
 				_state = DesiredState.Default();
 				_state.Profile = _profile;
+
+				/*
+					Drop the recorded factory limits so they are re-read.
+
+					The rail is clean at this point — every offset has just been cleared — so the
+					reported limits ARE the factory ones again. Re-reading is also how a baseline
+					that was recorded wrongly gets corrected; there is otherwise no way back, since
+					the stored value deliberately wins over anything derived from live readings.
+				*/
+				_state.Voltage.BaselineMinMv = 0;
+				_state.Voltage.BaselineMaxMv = 0;
+
 				_targetW = 0;
 				_voltOffsetMv = 0;
 				SaveState();

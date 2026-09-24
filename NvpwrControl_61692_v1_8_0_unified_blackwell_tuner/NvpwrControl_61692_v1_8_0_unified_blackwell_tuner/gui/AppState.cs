@@ -29,6 +29,18 @@ namespace NvpwrControl
         public RailOffsets Msvdd = new RailOffsets();
         public long DemandCoreMv, DemandXbarMv, DemandSysMv, DemandVideoMv;
 
+        /// <summary>
+        /// The factory voltage limits, in mV, captured once while every offset was zero.
+        ///
+        /// These have to be remembered rather than derived from the live readings. The obvious
+        /// derivation — reported limit minus the offset on that rail — only holds while OV is
+        /// untouched, because an active OV offset changes the reported maximum without appearing
+        /// in the REL value. Deriving it after the ceiling had been pulled to 1020 produced a
+        /// baseline of 1020, and asking for 1025 then wrote REL +5 against the real baseline of
+        /// 1025, landing on 1030.
+        /// </summary>
+        public long BaselineMinMv, BaselineMaxMv;
+
         public bool DemandIsZero
         {
             get { return DemandCoreMv == 0 && DemandXbarMv == 0 && DemandSysMv == 0 && DemandVideoMv == 0; }
@@ -202,6 +214,8 @@ namespace NvpwrControl
             b.AppendLine(p + "nvvdd_rel_uv=" + s.Voltage.Nvvdd.RelUv);
             b.AppendLine(p + "nvvdd_alt_uv=" + s.Voltage.Nvvdd.AltUv);
             b.AppendLine(p + "nvvdd_ov_uv=" + s.Voltage.Nvvdd.OvUv);
+            b.AppendLine(p + "baseline_min_mv=" + s.Voltage.BaselineMinMv);
+            b.AppendLine(p + "baseline_max_mv=" + s.Voltage.BaselineMaxMv);
             b.AppendLine(p + "msvdd_vmin_uv=" + s.Voltage.Msvdd.VminUv);
             b.AppendLine(p + "msvdd_rel_uv=" + s.Voltage.Msvdd.RelUv);
             b.AppendLine(p + "msvdd_alt_uv=" + s.Voltage.Msvdd.AltUv);
@@ -267,6 +281,8 @@ namespace NvpwrControl
             s.Voltage.Nvvdd.RelUv = num("nvvdd_rel_uv");
             s.Voltage.Nvvdd.AltUv = num("nvvdd_alt_uv");
             s.Voltage.Nvvdd.OvUv = num("nvvdd_ov_uv");
+            s.Voltage.BaselineMinMv = num("baseline_min_mv");
+            s.Voltage.BaselineMaxMv = num("baseline_max_mv");
             s.Voltage.Msvdd.VminUv = num("msvdd_vmin_uv");
             s.Voltage.Msvdd.RelUv = num("msvdd_rel_uv");
             s.Voltage.Msvdd.AltUv = num("msvdd_alt_uv");
@@ -401,6 +417,18 @@ namespace NvpwrControl
         public RailOffsets Nvvdd = new RailOffsets();
         public RailOffsets Msvdd = new RailOffsets();
         public long DemandCoreMv, DemandXbarMv, DemandSysMv, DemandVideoMv;
+
+        /// <summary>
+        /// The factory voltage limits, in mV, captured once while every offset was zero.
+        ///
+        /// These have to be remembered rather than derived from the live readings. The obvious
+        /// derivation — reported limit minus the offset on that rail — only holds while OV is
+        /// untouched, because an active OV offset changes the reported maximum without appearing
+        /// in the REL value. Deriving it after the ceiling had been pulled to 1020 produced a
+        /// baseline of 1020, and asking for 1025 then wrote REL +5 against the real baseline of
+        /// 1025, landing on 1030.
+        /// </summary>
+        public long BaselineMinMv, BaselineMaxMv;
         // Two different things, and conflating them produced a wrong reading in the UI:
         //   NvvddMinUv/MaxUv        the DEVICE range the rail can be set within (445–1280 mV)
         //   NvvddLimitMinMv/MaxMv   the limits currently in force (625/1025 mV), which move
