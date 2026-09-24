@@ -27,6 +27,7 @@ namespace NvpwrControl
         internal SlotsDialog(MainWindow owner, ConfigSlot[] slots)
         {
             InitializeComponent();
+            DarkTitleBar.Apply(this);   // match the app: Windows draws this caption dark
             _owner = owner;
             _slots = slots;
 

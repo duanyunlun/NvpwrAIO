@@ -131,6 +131,16 @@ namespace NvpwrControl
 			_voltOffsetMv = (int)_state.Voltage.DemandCoreMv;
 			_xbarOffsetMv = (int)_state.Voltage.DemandXbarMv;
 			_relOffsetMv = (int)(_state.Voltage.Nvvdd.RelUv / 1000);
+
+			// The title bar stays Windows', but is told to draw itself dark. Repainting the
+			// caption by hand would mean reimplementing the buttons, snapping and resize borders;
+			// this keeps all of that and changes only the colour. Hung off Loaded because the
+			// window handle does not exist before then.
+			base.Loaded += delegate
+			{
+				DarkTitleBar.Apply(this);
+			};
+
 			ApplyTooltips();
 			base.Loaded += OnLoaded;
 			base.ContentRendered += delegate

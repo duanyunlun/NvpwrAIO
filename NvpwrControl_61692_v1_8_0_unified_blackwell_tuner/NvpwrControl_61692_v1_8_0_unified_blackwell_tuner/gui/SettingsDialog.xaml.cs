@@ -25,6 +25,7 @@ namespace NvpwrControl
         internal SettingsDialog(MainWindow owner, DesiredState state)
         {
             InitializeComponent();
+            DarkTitleBar.Apply(this);   // match the app: Windows draws this caption dark
             _owner = owner;
             _state = state;
 
