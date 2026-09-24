@@ -586,8 +586,8 @@ namespace NvpwrControl
 			TextBlock[] array3 = new TextBlock[3] { ClkCoreMaxLabel, ClkMemMaxLabel, ClkXbarMaxLabel };
 			bool[] array4 = new bool[3] { tuningState.CoreOk, tuningState.MemoryOk, tuningState.XbarOk };
 			long[] array5 = new long[3] { tuningState.CoreMhz, tuningState.MemoryMhz, tuningState.XbarMhz };
-			long[] array6 = new long[3] { tuningState.CoreMin, tuningState.MemoryMin, -1000L };
-			long[] array7 = new long[3] { tuningState.CoreMax, tuningState.MemoryMax, 1000L };
+			long[] array6 = new long[3] { tuningState.CoreMin, tuningState.MemoryMin, tuningState.XbarMin };
+			long[] array7 = new long[3] { tuningState.CoreMax, tuningState.MemoryMax, tuningState.XbarMax };
 			for (int i = 0; i < 3; i++)
 			{
 				array[i].IsEnabled = array4[i];
@@ -1168,8 +1168,8 @@ namespace NvpwrControl
 			TuningState tuningState = Tuning.Query();
 			TextBox[] array = new TextBox[3] { ClkCore, ClkMem, ClkXbar };
 			bool[] array2 = new bool[3] { tuningState.CoreOk, tuningState.MemoryOk, tuningState.XbarOk };
-			long[] array3 = new long[3] { tuningState.CoreMin, tuningState.MemoryMin, -1000L };
-			long[] array4 = new long[3] { tuningState.CoreMax, tuningState.MemoryMax, 1000L };
+			long[] array3 = new long[3] { tuningState.CoreMin, tuningState.MemoryMin, tuningState.XbarMin };
+			long[] array4 = new long[3] { tuningState.CoreMax, tuningState.MemoryMax, tuningState.XbarMax };
 			string[] array5 = new string[3] { "核心", "显存", "XBAR" };
 			for (int i = 0; i < 3; i++)
 			{

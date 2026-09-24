@@ -10,7 +10,13 @@ namespace NvpwrControl
     {
         public bool CoreOk; public long CoreMhz, CoreMin, CoreMax;
         public bool MemoryOk; public long MemoryMhz, MemoryMin, MemoryMax;
-        public bool XbarOk; public long XbarMhz;
+
+        /// <summary>
+        /// Crossbar fabric offset. The driver reports no range for this domain — core and memory
+        /// carry a min/max in Pstates20, this one does not — so the bounds come from the
+        /// absolute limit the C++ module enforces.
+        /// </summary>
+        public bool XbarOk; public long XbarMhz, XbarMin, XbarMax;
         public string Error = "";
     }
 
@@ -113,6 +119,50 @@ namespace NvpwrControl
         private const uint DOMAIN_MEMORY = 4;
         private const int DELTA_OFF = 12;   // cur / min / max live at +12/+16/+20
 
+        /*
+            XBAR clock domain — the crossbar fabric frequency.
+
+            This is NOT in Pstates20. Core and memory offsets live there, but the crossbar is
+            a separate private interface, which is why this file used to report XbarOk = false
+            and hide the row rather than show a control that could not work.
+
+            The ids and the buffer layout come from this project's own C++ OC module
+            (app/nvapi_tuner.cpp), which has implemented the full path — including the
+            validation that makes it safe to use — since before this GUI existed. Loong0x00 is
+            credited there for discovering the interface.
+
+            The layout is not read from a header. The driver returns a buffer whose records
+            begin at a position that has to be found, each marked with CLK_MARKER and each
+            CLK_STRIDE bytes apart. Core and memory can be read from fixed offsets; this cannot.
+        */
+        private const uint ID_CLK_GET = 0xF58938F5;
+        private const uint ID_CLK_SET = 0xD14B69CF;
+        private const uint CLK_VERSION = 0x000261A4;
+        private const int CLK_BUFSIZE = 0x13000;
+        private const uint CLK_MASK = 0xFF;
+        private const uint CLK_MARKER = 0x0F;
+        private const int CLK_OFF_FREQ = 0x114;
+        private const int CLK_OFF_MSVDD = 0x11C;
+        private const int CLK_STRIDE = 0x304;
+
+        /// <summary>
+        /// Domain index for the crossbar, from the NvAPI clock-domain enumeration.
+        ///
+        /// Used as a fallback. The audited path is stronger: exactly one entry in the buffer
+        /// normally carries a non-zero frequency or voltage, and when that is true its index is
+        /// used instead of this constant, so the code does not depend on the enum holding still.
+        /// </summary>
+        private const uint CLK_INDEX_XBAR = 1;
+
+        /// <summary>
+        /// Absolute bound on the crossbar offset, matching the C++ module.
+        ///
+        /// The driver does not report a range for this domain the way it does for core and
+        /// memory, so there is nothing to check against beyond this.
+        /// </summary>
+        private const long XBAR_ABS_MIN_MHZ = -1000;
+        private const long XBAR_ABS_MAX_MHZ = 1000;
+
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern IntPtr LoadLibraryW(string path);
 
@@ -209,6 +259,169 @@ namespace NvpwrControl
             return -1;
         }
 
+        /// <summary>Where the crossbar record sits, once the buffer has been parsed.</summary>
+        private sealed class XbarFields
+        {
+            public int Base;
+            public int Stride;
+            public uint Index;
+            public int FreqKHz;
+            public int MsvddUv;
+        }
+
+        /// <summary>
+        /// Finds the start of the repeating clock-domain records in the control buffer.
+        ///
+        /// The records are not at a documented offset. Each one begins with CLK_MARKER and they
+        /// are evenly spaced, so the layout is recovered by looking for the marker repeated at a
+        /// fixed interval.
+        ///
+        /// Two paths, in order of confidence:
+        ///
+        ///   1. The audited Blackwell stride. Runs of at least two records CLK_STRIDE apart are
+        ///      collected, and exactly one run start is required. Two would be ambiguous, and
+        ///      guessing between them is the kind of thing that writes a frequency into the
+        ///      wrong domain.
+        ///   2. A search for whichever interval explains the most markers, used only when the
+        ///      audited stride is not visible. The caller rejects any stride other than
+        ///      CLK_STRIDE afterwards, so this path exists to produce a clear error rather than
+        ///      to support a different layout.
+        ///
+        /// Ported from FindRepeatingDwordLayout in the C++ module, including the refusal to
+        /// proceed on ambiguity.
+        /// </summary>
+        private static bool FindRepeatingDwordLayout(byte[] b, uint marker, out int baseOff, out int stride)
+        {
+            baseOff = 0;
+            stride = 0;
+
+            List<int> hits = new List<int>();
+            for (int off = 0x100; off + 4 <= b.Length; off += 4)
+            {
+                if (U32(b, off) == marker) hits.Add(off);
+            }
+            if (hits.Count < 2) return false;
+
+            List<int> auditedRuns = new List<int>();
+            foreach (int h in hits)
+            {
+                if (h >= CLK_STRIDE && U32(b, h - CLK_STRIDE) == marker) continue;  // not a run start
+                int count = 1;
+                for (int n = h + CLK_STRIDE; n + 4 <= b.Length; n += CLK_STRIDE)
+                {
+                    if (U32(b, n) == marker) count++;
+                    else break;
+                }
+                if (count >= 2) auditedRuns.Add(h);
+            }
+            if (auditedRuns.Count == 1)
+            {
+                baseOff = auditedRuns[0];
+                stride = CLK_STRIDE;
+                return true;
+            }
+            if (auditedRuns.Count > 1) return false;
+
+            int bestCount = 0, bestBase = 0, bestStride = 0;
+            for (int i = 0; i + 1 < hits.Count; i++)
+            {
+                int candidate = hits[i + 1] - hits[i];
+                if (candidate < 0x40 || candidate > 0x1000) continue;
+                int count = 0;
+                foreach (int h in hits)
+                {
+                    if (h >= hits[i] && ((h - hits[i]) % candidate) == 0) count++;
+                }
+                if (count > bestCount)
+                {
+                    bestCount = count;
+                    bestBase = hits[i];
+                    bestStride = candidate;
+                }
+            }
+            if (bestCount < 2) return false;
+            baseOff = bestBase;
+            stride = bestStride;
+            return true;
+        }
+
+        /// <summary>
+        /// Reads the crossbar record. Returns the buffer so a write can modify it in place and
+        /// hand it back, the same way the Pstates20 path works.
+        /// </summary>
+        private static bool ReadXbar(byte[] b, XbarFields f, out string error)
+        {
+            error = null;
+            BufferFn get = GetFn(ID_CLK_GET);
+            BufferFn set = GetFn(ID_CLK_SET);
+            if (get == null || set == null)
+            {
+                error = "ClockDomains GET/SET 接口缺失";
+                return false;
+            }
+
+            Array.Clear(b, 0, b.Length);
+            PutU32(b, 0, CLK_VERSION);
+            PutU32(b, 8, CLK_MASK);
+            if (get(_gpu, b) != 0)
+            {
+                error = "ClockDomains GET 调用失败";
+                return false;
+            }
+            if (U32(b, 0) != CLK_VERSION)
+            {
+                error = "ClockDomains 版本不匹配";
+                return false;
+            }
+
+            int baseOff, stride;
+            if (!FindRepeatingDwordLayout(b, CLK_MARKER, out baseOff, out stride))
+            {
+                error = "未能确定 ClockDomains 记录布局";
+                return false;
+            }
+
+            // The field offsets were validated against the audited Blackwell layout. A different
+            // stride means the fields have moved, and guessing where is worse than refusing.
+            if (stride != CLK_STRIDE)
+            {
+                error = "ClockDomains 记录步长为 0x" + stride.ToString("X") +
+                        "，不是已验证的 0x" + CLK_STRIDE.ToString("X") + " 布局";
+                return false;
+            }
+
+            uint idx = CLK_INDEX_XBAR;
+            List<uint> nonzero = new List<uint>();
+            for (uint i = 0; i < 32; i++)
+            {
+                int e = baseOff + (int)i * stride;
+                if (e + CLK_OFF_MSVDD + 4 > b.Length) break;
+                if (I32(b, e + CLK_OFF_FREQ) != 0 || I32(b, e + CLK_OFF_MSVDD) != 0) nonzero.Add(i);
+            }
+            // Normally exactly one domain carries a setting. When that holds, trust it over the
+            // enum constant.
+            if (nonzero.Count == 1) idx = nonzero[0];
+
+            int entry = baseOff + (int)idx * stride;
+            if (entry + CLK_OFF_MSVDD + 4 > b.Length)
+            {
+                error = "XBAR 记录超出控制缓冲区";
+                return false;
+            }
+            if (U32(b, entry) != CLK_MARKER)
+            {
+                error = "XBAR 记录位置没有标记";
+                return false;
+            }
+
+            f.Base = baseOff;
+            f.Stride = stride;
+            f.Index = idx;
+            f.FreqKHz = I32(b, entry + CLK_OFF_FREQ);
+            f.MsvddUv = I32(b, entry + CLK_OFF_MSVDD);
+            return true;
+        }
+
         /// <summary>Reads the current offsets and the driver-reported range.</summary>
         public static TuningState Query()
         {
@@ -250,11 +463,24 @@ namespace NvpwrControl
                 }
             }
 
-            // XBAR is a ClockDomains private interface. Reading it needs a
-            // different buffer layout, so it is reported as unavailable here
-            // rather than shown as a control that cannot work. The C++ module
-            // implements the full path for users who need it.
-            t.XbarOk = false;
+            // The crossbar lives on a separate interface with its own buffer layout. A failure
+            // here does not invalidate core and memory, so it is recorded as "not available"
+            // rather than propagated — the row hides itself and the other two keep working.
+            byte[] xb = new byte[CLK_BUFSIZE];
+            XbarFields xf = new XbarFields();
+            string xerr;
+            if (ReadXbar(xb, xf, out xerr))
+            {
+                t.XbarOk = true;
+                t.XbarMhz = xf.FreqKHz / 1000;
+                t.XbarMin = XBAR_ABS_MIN_MHZ;
+                t.XbarMax = XBAR_ABS_MAX_MHZ;
+            }
+            else
+            {
+                t.XbarOk = false;
+                if (string.IsNullOrEmpty(t.Error)) t.Error = xerr;
+            }
             return t;
         }
 
@@ -306,6 +532,65 @@ namespace NvpwrControl
             if (after.MemoryMhz != wanted.MemoryOffsetMhz)
             { error = "显存偏移未被保留（请求 " + wanted.MemoryOffsetMhz + "，回读 " + after.MemoryMhz + "）"; return false; }
 
+            // The crossbar is a separate interface and a separate buffer, so it gets its own
+            // read-modify-write. Done after core and memory so that a failure here leaves those
+            // two applied rather than aborting the whole apply.
+            if (wanted.XbarOffsetMhz != 0 || live.XbarOk)
+            {
+                if (!live.XbarOk)
+                {
+                    if (wanted.XbarOffsetMhz != 0)
+                    {
+                        error = "XBAR 频率接口不可用，无法设置偏移";
+                        return false;
+                    }
+                }
+                else
+                {
+                    if (wanted.XbarOffsetMhz < XBAR_ABS_MIN_MHZ || wanted.XbarOffsetMhz > XBAR_ABS_MAX_MHZ)
+                    {
+                        error = "XBAR 偏移超出 " + XBAR_ABS_MIN_MHZ + " .. +" + XBAR_ABS_MAX_MHZ + " MHz";
+                        return false;
+                    }
+                    if (!ApplyXbar(wanted.XbarOffsetMhz, out error)) return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Writes the crossbar offset through the ClockDomains interface.
+        ///
+        /// Read-modify-write on the buffer the GET returned, because the same buffer carries the
+        /// MSVDD voltage field and zeroing it would clear a setting this code does not own.
+        /// </summary>
+        private static bool ApplyXbar(long offsetMhz, out string error)
+        {
+            error = null;
+            BufferFn set = GetFn(ID_CLK_SET);
+            if (set == null) { error = "ClockDomains SET 接口缺失"; return false; }
+
+            byte[] b = new byte[CLK_BUFSIZE];
+            XbarFields f = new XbarFields();
+            if (!ReadXbar(b, f, out error)) return false;
+
+            // The offset is stored in kHz, same as the other domains.
+            int entry = f.Base + (int)f.Index * f.Stride;
+            PutI32(b, entry + CLK_OFF_FREQ, (int)(offsetMhz * 1000));
+
+            if (set(_gpu, b) != 0) { error = "ClockDomains SET 调用失败"; return false; }
+
+            // Verify with a fresh read rather than trusting the SET.
+            byte[] rb = new byte[CLK_BUFSIZE];
+            XbarFields rf = new XbarFields();
+            string rerr;
+            if (!ReadXbar(rb, rf, out rerr)) { error = "XBAR 回读失败: " + rerr; return false; }
+            if (rf.FreqKHz != (int)(offsetMhz * 1000))
+            {
+                error = "XBAR 偏移未被保留（请求 " + offsetMhz + "，回读 " + (rf.FreqKHz / 1000) + " MHz）";
+                return false;
+            }
             return true;
         }
 
