@@ -145,9 +145,23 @@ namespace NvpwrControl
 		{
 			InitializeComponent();
 			LoadStateAndSlots();
+
+			/*
+				Restore every offset the saved state carries, not just some of them.
+
+				This used to read DemandCoreMv, DemandXbarMv and Nvvdd.RelUv and stop there, so a
+				saved VMIN limit came back as zero. The chip's headline figures are read live from
+				mVolt and were right, but the sliders under them were rebuilt from the offsets, and
+				one of those was missing — the card said 900–1025 mV while its own lower slider sat
+				at 625 and the formula read 625 + 0. Reloading a configuration that the program had
+				just applied is exactly when this shows up.
+			*/
 			_voltOffsetMv = (int)_state.Voltage.DemandCoreMv;
 			_xbarOffsetMv = (int)_state.Voltage.DemandXbarMv;
+			_vminOffsetMv = (int)(_state.Voltage.Nvvdd.VminUv / 1000);
 			_relOffsetMv = (int)(_state.Voltage.Nvvdd.RelUv / 1000);
+			_altOffsetMv = (int)(_state.Voltage.Nvvdd.AltUv / 1000);
+			_ovOffsetMv = (int)(_state.Voltage.Nvvdd.OvUv / 1000);
 
 			// The title bar stays Windows', but is told to draw itself dark. Repainting the
 			// caption by hand would mean reimplementing the buttons, snapping and resize borders;
@@ -366,9 +380,20 @@ namespace NvpwrControl
 				_targetW = _powerFloorW;
 			}
 			FillCardNotes();
-			PushStateToControls();
 			RefreshServiceButton();
+
+			/*
+				Refresh first, then write the saved state into the controls.
+
+				The other order set the sliders while _baseMinMv and _baseMaxMv were still their
+				field-initialiser defaults, because those are derived inside RefreshVoltagePanel
+				from what mVolt reports. PushStateToControls builds each slider from baseline plus
+				offset, so running it first would place them against a guessed baseline and nothing
+				later corrects them — the one-second timer deliberately leaves the pending sliders
+				alone.
+			*/
 			RefreshAll(logIt: true);
+			PushStateToControls();
 			_refreshTimer = new DispatcherTimer
 			{
 				Interval = TimeSpan.FromSeconds(1.0)
