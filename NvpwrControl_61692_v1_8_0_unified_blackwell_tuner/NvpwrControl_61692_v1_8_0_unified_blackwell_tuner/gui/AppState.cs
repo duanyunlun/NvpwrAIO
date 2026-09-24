@@ -907,6 +907,68 @@ namespace NvpwrControl
                 ManualHint = "位置：Windows 安全中心 → 设备安全性 → 内核隔离 → Microsoft 易受攻击的驱动程序阻止列表。"
             });
 
+            /*
+                WDAC code-integrity policies that survive the registry switch.
+
+                Turning off VulnerableDriverBlocklistEnable is not sufficient on its own. The same
+                blocklist is also installed as signed CI policy files, and a signed policy is
+                enforced independently of that value. The reference tooling deletes these files as
+                a separate step, from both the EFI system partition and the Windows directory,
+                and warns that on recent Windows the driver will otherwise fail to load or take
+                the machine down.
+
+                {8F9CB695-...} is the driver blocklist policy; {784C4414-...} is the cross-certificate
+                exceptions policy. Only the Windows-side copies are listed here — the EFI-side ones
+                are checked at delete time, since reading the ESP needs it mounted.
+            */
+            string[] policyIds =
+            {
+                "{784C4414-79F4-4C32-A6A5-F0FB42A51D0D}",
+                "{8F9CB695-5D48-48D6-A329-7202B44607E3}"
+            };
+            List<string> present = new List<string>();
+            string policyDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                "System32", "CodeIntegrity", "CiPolicies", "Active");
+            foreach (string id in policyIds)
+            {
+                if (File.Exists(Path.Combine(policyDir, id + ".cip")))
+                {
+                    present.Add(id);
+                }
+            }
+            list.Add(new UnlockCheck
+            {
+                Name = "CI 策略",
+                Ok = present.Count == 0,
+                Blocking = present.Count > 0,
+                Detail = present.Count == 0 ? "已清除" : ("还有 " + present.Count + " 个策略文件（点击清除）"),
+                ActionId = "cipolicy",
+                ManualHint = "已签名的 WDAC 策略独立于注册表开关生效。清除会先备份到程序数据目录，可还原。\n" +
+                             "这些文件受保护，操作需要管理员权限；Secure Boot 必须已关闭，否则策略会被重新应用。"
+            });
+
+            // EfiGuard. Without it there is no way to load a self-signed driver short of
+            // test-signing mode, which needs a reboot and leaves a marker anti-cheat software
+            // reads. This is checked last because it is the only item that depends on how the
+            // machine was booted rather than on a setting.
+            bool efiPresent = File.Exists(Path.Combine(
+                Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName), "EfiDSEFix.exe"));
+            bool efiBooted = efiPresent && DseControl.IsBooted();
+            list.Add(new UnlockCheck
+            {
+                Name = "EfiGuard",
+                Ok = efiBooted,
+                Blocking = !efiBooted,
+                Detail = !efiPresent ? "未找到 EfiDSEFix.exe"
+                                     : (efiBooted ? "已生效" : "已安装，但本次未经它引导"),
+                ActionId = null,
+                ManualHint = efiPresent
+                    ? "本次启动没有经过 EfiGuard，无法临时关闭驱动签名强制。\n" +
+                      "请重启并从 EfiGuard 启动项进入系统。"
+                    : "EfiDSEFix.exe 需要与本程序放在同一目录。"
+            });
+
             return list;
         }
 
@@ -991,6 +1053,9 @@ namespace NvpwrControl
                         return true;
                     }
 
+                    case "cipolicy":
+                        return ClearCodeIntegrityPolicies(out message);
+
                     default:
                         message = "这一项无法由程序修改。";
                         return false;
@@ -1000,6 +1065,123 @@ namespace NvpwrControl
             {
                 message = "修改失败：" + ex.Message;
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Removes the signed WDAC code-integrity policies that duplicate the blocklist switch.
+        ///
+        /// They are deleted rather than disabled because there is no supported way to disable
+        /// them: the policy is applied by the boot manager, and the only lever is whether the
+        /// file is present. That is also why Secure Boot has to be off — with it on the policy
+        /// is re-applied from the firmware side and the deletion does not stick.
+        ///
+        /// Everything removed is copied to the program data directory first, so this is
+        /// reversible even though the originals live in protected locations. The files are
+        /// owned by TrustedInstaller, so ownership is taken before deleting — the same dance the
+        /// reference tooling does.
+        ///
+        /// The EFI partition is not touched here. Reading it requires mounting it, and the
+        /// observed machines keep these policies in the Windows directory; the app reports what
+        /// it finds rather than mounting system partitions behind the user's back.
+        /// </summary>
+        private static bool ClearCodeIntegrityPolicies(out string message)
+        {
+            message = null;
+            string[] ids =
+            {
+                "{784C4414-79F4-4C32-A6A5-F0FB42A51D0D}",
+                "{8F9CB695-5D48-48D6-A329-7202B44607E3}"
+            };
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                "System32", "CodeIntegrity", "CiPolicies", "Active");
+            string backup = Path.Combine(Store.Dir, "CiPolicyBackup");
+
+            List<string> removed = new List<string>();
+            List<string> failed = new List<string>();
+            try
+            {
+                Directory.CreateDirectory(backup);
+            }
+            catch (Exception ex)
+            {
+                message = "无法创建备份目录：" + backup + "\n\n" + ex.Message;
+                return false;
+            }
+
+            foreach (string id in ids)
+            {
+                string file = Path.Combine(dir, id + ".cip");
+                if (!File.Exists(file))
+                {
+                    continue;
+                }
+                try
+                {
+                    File.Copy(file, Path.Combine(backup, id + ".cip"), true);
+
+                    // takeown then icacls, because the file is owned by TrustedInstaller and a
+                    // plain delete fails with access denied.
+                    RunTool("takeown.exe", "/f \"" + file + "\" /a");
+                    RunTool("icacls.exe", "\"" + file + "\" /grant Administrators:F /c /q");
+
+                    FileAttributes attrs = File.GetAttributes(file);
+                    if ((attrs & FileAttributes.ReadOnly) != 0)
+                    {
+                        File.SetAttributes(file, attrs & ~FileAttributes.ReadOnly);
+                    }
+                    File.Delete(file);
+                    removed.Add(id);
+                }
+                catch (Exception ex)
+                {
+                    failed.Add(id + "：" + ex.Message);
+                }
+            }
+
+            if (removed.Count == 0 && failed.Count == 0)
+            {
+                message = "没有找到需要清除的 CI 策略文件。";
+                return true;
+            }
+            if (failed.Count > 0)
+            {
+                message = "部分策略文件删除失败：\n\n" + string.Join("\n", failed) +
+                          "\n\n备份在：" + backup;
+                return false;
+            }
+            message = "已清除 " + removed.Count + " 个 CI 策略文件，备份在：\n" + backup +
+                      "\n\n需要重启才会生效。\n" +
+                      "还原方式：把备份目录里的文件复制回\n" + dir;
+            return true;
+        }
+
+        /// <summary>Runs a console tool and ignores everything but the exit code.</summary>
+        private static void RunTool(string exe, string arguments)
+        {
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = exe,
+                    Arguments = arguments,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+                using (Process p = Process.Start(psi))
+                {
+                    if (p == null) return;
+                    p.StandardOutput.ReadToEnd();
+                    p.StandardError.ReadToEnd();
+                    p.WaitForExit(20000);
+                }
+            }
+            catch
+            {
+                // Best effort: if the tool is missing the delete below reports the real error.
             }
         }
 

@@ -1,0 +1,711 @@
+/*
+    service_main.cpp — Nvpwr Control background service (NvpwrSvc.exe).
+
+    WHERE: a user-mode Windows service, the only component that is allowed to
+           keep the tuning alive without a window on screen.
+    WHAT:  owns the desired state, replays it at boot and after resume, and
+           serves the tray GUI over a named pipe.
+    WHY:   GPU power/voltage policy lives in memory owned by the NVIDIA driver
+           and does not survive a driver reload or a reboot. "Keep my settings
+           after a restart" can therefore only mean "re-apply them at startup".
+           That is what this process does, and it is also why the replay has to
+           report failures instead of assuming success: at boot the NVIDIA stack
+           may not be ready yet, and the helper driver may have failed to load.
+
+    SECURITY NOTE (read before shipping this more widely):
+      The pipe grants FILE_ALL_ACCESS with a NULL security descriptor, which
+      yields a default ACL reachable by the interactive user. Every command is
+      re-validated here (profile range, voltage envelope, readback), so a local
+      user cannot push an out-of-range value through the pipe - but they CAN
+      change the power limit within the allowed range. For a wider deployment the
+      descriptor should be replaced with one naming only BUILTIN\Administrators
+      and the GUI should be required to be elevated.
+*/
+
+#include <windows.h>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include "..\\app\\nvpwr_ipc.h"
+#include "..\\app\\nvpwr_ui_state.h"
+#include "..\\app\\nvpwr_mvolt_bridge.h"
+#include "..\\shared\\nvpwr_ioctl.h"
+
+using nvpwr::DesiredState;
+
+static SERVICE_STATUS_HANDLE g_statusHandle = nullptr;
+static SERVICE_STATUS g_status{};
+static HANDLE g_stopEvent = nullptr;
+static HANDLE g_pipe = nullptr;
+
+/* ------------------------------------------------------------------ */
+/* logging                                                            */
+/* ------------------------------------------------------------------ */
+
+static void SvcLog(const std::wstring& text) {
+    std::wstring dir = nvpwr::StateDirectory();
+    if (dir.empty()) return;
+    std::wstring path = dir + L"\\nvpwr-service.log";
+
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    wchar_t stamp[64]{};
+    swprintf_s(stamp, L"[%04u-%02u-%02u %02u:%02u:%02u] ",
+               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+
+    HANDLE h = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+
+    std::wstring line = std::wstring(stamp) + text + L"\r\n";
+    int n = WideCharToMultiByte(CP_UTF8, 0, line.c_str(), (int)line.size(), nullptr, 0, nullptr, nullptr);
+    std::string utf8((size_t)n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, line.c_str(), (int)line.size(), &utf8[0], n, nullptr, nullptr);
+    DWORD wrote = 0;
+    WriteFile(h, utf8.data(), (DWORD)utf8.size(), &wrote, nullptr);
+    CloseHandle(h);
+}
+
+static void SetServiceState(DWORD state, DWORD exitCode = NO_ERROR, DWORD hint = 0) {
+    g_status.dwCurrentState = state;
+    g_status.dwWin32ExitCode = exitCode;
+    g_status.dwWaitHint = hint;
+    if (state == SERVICE_START_PENDING || state == SERVICE_STOP_PENDING)
+        g_status.dwControlsAccepted = 0;
+    else
+        g_status.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
+    SetServiceStatus(g_statusHandle, &g_status);
+}
+
+/* ------------------------------------------------------------------ */
+/* device access                                                      */
+/* ------------------------------------------------------------------ */
+
+static std::wstring ExeDirectory() {
+    wchar_t path[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::wstring s(path);
+    size_t p = s.find_last_of(L"\\/");
+    return (p == std::wstring::npos) ? L"." : s.substr(0, p);
+}
+
+static bool IsRegularFile(const std::wstring& path) {
+    DWORD a = GetFileAttributesW(path.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+/* The service may live next to the GUI or in its own folder; search a few
+   plausible locations the same way the GUI does. */
+static std::wstring LocateDriverFile() {
+    static const wchar_t kDriverFile[] = L"Nvpwr.sys";
+    std::vector<std::wstring> roots;
+    roots.push_back(ExeDirectory());
+    {
+        wchar_t base[MAX_PATH]{};
+        if (GetEnvironmentVariableW(L"ProgramData", base, MAX_PATH))
+            roots.push_back(std::wstring(base) + L"\\NvpwrControl");
+    }
+
+    for (const std::wstring& root : roots) {
+        std::wstring dir = root;
+        for (int depth = 0; depth < 4 && !dir.empty(); ++depth) {
+            const std::wstring candidates[] = {
+                dir + L"\\" + kDriverFile,
+                dir + L"\\dist\\" + kDriverFile,
+                dir + L"\\driver\\x64\\Release\\" + kDriverFile,
+                dir + L"\\driver\\x64\\Debug\\" + kDriverFile,
+                dir + L"\\app\\x64\\Release\\" + kDriverFile,
+            };
+            for (const std::wstring& c : candidates)
+                if (IsRegularFile(c)) return c;
+
+            size_t p = dir.find_last_of(L"\\/");
+            if (p == std::wstring::npos || p < 3) break;
+            dir = dir.substr(0, p);
+        }
+    }
+    return L"";
+}
+
+/*
+    Driver Signature Enforcement, through EfiGuard's EfiDSEFix.
+
+    Nvpwr.sys is self-signed, so Windows refuses to load it while DSE is enforced. EfiGuard
+    patches the kernel during boot, which makes it possible to turn DSE off and back on at run
+    time — no test-signing mode, so no desktop watermark and no BCD flag for anti-cheat to read.
+
+    The window is deliberately tiny: off immediately before the load, on immediately after. It
+    is restored even when the load fails, and a failure to restore is logged loudly because it
+    is the one outcome here that is worse than not applying the power limit at all.
+*/
+static bool RunDseFix(const wchar_t* argument, std::wstring& error) {
+    std::wstring dir = LocateDriverFile();
+    if (!dir.empty()) {
+        size_t p = dir.find_last_of(L"\\/");
+        if (p != std::wstring::npos) dir = dir.substr(0, p);
+    }
+    if (dir.empty()) { error = L"cannot locate the program directory"; return false; }
+    std::wstring exe = dir + L"\\EfiDSEFix.exe";
+
+    if (GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        error = L"EfiDSEFix.exe not found beside the service";
+        return false;
+    }
+
+    std::wstring cmd = L"\"" + exe + L"\" " + argument;
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+    buf.push_back(L'\0');
+
+    STARTUPINFOW si{};
+    PROCESS_INFORMATION pi{};
+    si.cb = sizeof(si);
+    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        error = L"cannot start EfiDSEFix " + std::wstring(argument) +
+                L" (error " + std::to_wstring(GetLastError()) + L")";
+        return false;
+    }
+    /* EfiDSEFix writes with WriteConsoleW, which bypasses redirection, so the exit code is the
+       only signal available. */
+    DWORD wait = WaitForSingleObject(pi.hProcess, 20000);
+    DWORD code = 1;
+    if (wait == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, 1);
+        error = L"EfiDSEFix " + std::wstring(argument) + L" timed out";
+    } else {
+        GetExitCodeProcess(pi.hProcess, &code);
+        if (code != 0) {
+            wchar_t hex[32];
+            swprintf_s(hex, L"0x%08X", code);
+            error = L"EfiDSEFix " + std::wstring(argument) + L" exited " + hex;
+        }
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return wait != WAIT_TIMEOUT && code == 0;
+}
+
+/* True when this boot went through EfiGuard and the hook answers. */
+static bool EfiGuardActive() {
+    std::wstring err;
+    return RunDseFix(L"-c", err);
+}
+
+/*
+    Opens \\.\Nvpwr, registering and starting the kernel service if needed.
+
+    At boot the NVIDIA driver may not be initialised yet, so a failure here is
+    expected and must be retried rather than treated as fatal. The kernel side
+    also refuses work until nvlddmkm.sys is present and its build signature
+    matches, which is why the caller retries with a backoff.
+
+    DSE is closed around the attempt and reopened immediately afterwards. When EfiGuard is not
+    active the load cannot succeed, so the attempt is skipped and reported: that is a boot that
+    did not go through the EfiGuard entry, and the power ceiling simply stays at the factory
+    value.
+*/
+static bool OpenDevice(std::wstring& error) {
+    /* Already open? Then this is a later replay in the same session and none of the ceremony
+       below is needed. */
+    {
+        HANDLE probe = CreateFileW(NVPWR_DEVICE_WIN32, GENERIC_READ | GENERIC_WRITE,
+                                   0, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (probe != INVALID_HANDLE_VALUE) { CloseHandle(probe); return true; }
+    }
+
+    if (!EfiGuardActive()) {
+        error = L"EfiGuard is not active for this boot — power settings were not applied";
+        return false;
+    }
+
+    std::wstring dseErr;
+    bool dseOff = RunDseFix(L"-d", dseErr);
+    if (!dseOff) {
+        error = L"could not disable DSE: " + dseErr;
+        return false;
+    }
+
+    bool opened = false;
+
+    /* Register the helper if it is not there yet. Manual start is fine: this
+       service is the only thing that needs it, and it starts on demand. */
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr,
+                                   SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE);
+    if (scm) {
+        SC_HANDLE svc = OpenServiceW(scm, L"Nvpwr",
+                                     SERVICE_START | SERVICE_QUERY_STATUS | SERVICE_CHANGE_CONFIG);
+        if (!svc) {
+            std::wstring sys = LocateDriverFile();
+            if (!sys.empty()) {
+                svc = CreateServiceW(scm, L"Nvpwr", L"Nvpwr GPU Power Control",
+                                     SERVICE_START | SERVICE_QUERY_STATUS | SERVICE_CHANGE_CONFIG,
+                                     SERVICE_KERNEL_DRIVER, SERVICE_DEMAND_START,
+                                     SERVICE_ERROR_NORMAL, sys.c_str(),
+                                     nullptr, nullptr, nullptr, nullptr, nullptr);
+                if (svc) SvcLog(L"registered kernel helper at " + sys);
+            } else {
+                error = L"Nvpwr.sys was not found in any expected location";
+            }
+        }
+        if (svc) {
+            SERVICE_STATUS_PROCESS ssp{};
+            DWORD needed = 0;
+            if (QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO,
+                                     reinterpret_cast<LPBYTE>(&ssp), sizeof(ssp), &needed)) {
+                if (ssp.dwCurrentState != SERVICE_RUNNING) {
+                    if (!StartServiceW(svc, 0, nullptr)) {
+                        DWORD e = GetLastError();
+                        if (e != ERROR_SERVICE_ALREADY_RUNNING)
+                            error = L"StartService(Nvpwr) failed: " + std::to_wstring(e);
+                    }
+                }
+            }
+            CloseServiceHandle(svc);
+        }
+        CloseServiceHandle(scm);
+    } else {
+        error = L"OpenSCManager failed";
+    }
+
+    HANDLE dev = CreateFileW(NVPWR_DEVICE_WIN32, GENERIC_READ | GENERIC_WRITE,
+                             0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (dev == INVALID_HANDLE_VALUE) {
+        if (error.empty())
+            error = L"cannot open \\\\.\\Nvpwr (error " + std::to_wstring(GetLastError()) + L")";
+    } else {
+        CloseHandle(dev);
+        opened = true;
+    }
+
+    /* Back on no matter how the attempt went. Left off, the machine would run without driver
+       signature enforcement until the next reboot — worse than not applying the limit. */
+    std::wstring restoreErr;
+    if (!RunDseFix(L"-e", restoreErr)) {
+        SvcLog(L"WARNING: driver signature enforcement could not be restored: " + restoreErr +
+               L" — reboot to clear it");
+    }
+
+    return opened;
+}
+
+static bool SendPower(unsigned int milliwatts, unsigned int ceilingMw, unsigned int profile,
+                      std::wstring& error)
+{
+    HANDLE dev = CreateFileW(NVPWR_DEVICE_WIN32, GENERIC_READ | GENERIC_WRITE,
+                             0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (dev == INVALID_HANDLE_VALUE) {
+        error = L"device not open";
+        return false;
+    }
+    NVPWR_SET_POWER req{};
+    req.Version = NVPWR_SET_VERSION;
+    req.TargetMilliwatts = milliwatts;
+    req.MaxMilliwatts = ceilingMw;
+    req.Profile = profile;
+
+    DWORD got = 0;
+    BOOL ok = DeviceIoControl(dev, IOCTL_NVPWR_SET_POWER, &req, sizeof(req),
+                              nullptr, 0, &got, nullptr);
+    if (!ok) error = L"SET_POWER failed (error " + std::to_wstring(GetLastError()) + L")";
+    CloseHandle(dev);
+    return ok != FALSE;
+}
+
+static bool SendRestore(std::wstring& error) {
+    HANDLE dev = CreateFileW(NVPWR_DEVICE_WIN32, GENERIC_READ | GENERIC_WRITE,
+                             0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (dev == INVALID_HANDLE_VALUE) {
+        error = L"device not open";
+        return false;
+    }
+    DWORD got = 0;
+    BOOL ok = DeviceIoControl(dev, IOCTL_NVPWR_RESTORE, nullptr, 0,
+                              nullptr, 0, &got, nullptr);
+    if (!ok) error = L"RESTORE failed (error " + std::to_wstring(GetLastError()) + L")";
+    CloseHandle(dev);
+    return ok != FALSE;
+}
+
+/* ------------------------------------------------------------------ */
+/* state replay                                                       */
+/* ------------------------------------------------------------------ */
+
+static bool g_replayed = false;
+
+/*
+    Applies the stored voltage by invoking the companion tool (mVolt+).
+
+    WHY THIS IS A SEPARATE PROCESS AND NOT A CALL INTO THE DRIVER
+      This service cannot write voltage rails itself: no public interface exists
+      for it, and Pstates20 carries no voltage domain on the target GPU (measured
+      on the reference machine). mVolt+ does have that access. So the service
+      orchestrates: it runs mVolt+'s CLI with the offsets the user saved, then
+      reads the result back.
+
+    WHY THE RESULT IS VERIFIED RATHER THAN TRUSTED
+      A companion tool can be missing, moved, or updated to a version whose CLI
+      changed. Each of those has to surface as a specific log line rather than as
+      "voltage silently did not apply".
+*/
+static bool ReplayVoltageViaCompanion(const DesiredState& state) {
+    if (!state.voltage.enabled || state.voltage.IsZero()) return true;
+
+    if (state.voltage.applier != nvpwr::VoltageApplier::CompanionTool) {
+        SvcLog(L"voltage: no applier configured for this state; nothing to do");
+        return true;
+    }
+
+    const std::wstring path = state.mvoltPath;
+    if (!nvpwr::MVoltAvailable(path)) {
+        std::wstring msg = L"voltage: companion tool (mVolt+) was not found at the "
+                           L"configured location; voltage was NOT applied";
+        if (!path.empty()) msg += L" (" + path + L")";
+        SvcLog(msg);
+        return false;
+    }
+
+    /* Prove it can be launched from this context before asking it to do work: a
+       LocalSystem service and an interactive shell are different environments,
+       and finding out here gives a far clearer log line than a failed apply. */
+    {
+        std::wstring version, terr;
+        if (!nvpwr::TestMVoltLaunch(version, terr, path)) {
+            SvcLog(L"voltage: companion tool could not be launched from the service "
+                   L"context: " + terr);
+            return false;
+        }
+        SvcLog(L"voltage: companion tool reachable (" + version + L")");
+    }
+
+    bool rounded = false;
+    std::wstring verr;
+    if (!nvpwr::ApplyVoltageViaMVolt(state.voltage, verr, &rounded, path)) {
+        SvcLog(L"voltage: apply failed: " + verr);
+        return false;
+    }
+    if (rounded) {
+        /* Reported rather than hidden: a stored value finer than 1 mV cannot be
+           sent through this CLI, so the applied value differs slightly from the
+           saved one and the user should know. */
+        SvcLog(L"voltage: applied with rounding to whole millivolts");
+    }
+
+    /* Read back and compare, so "applied" means "verified applied". */
+    nvpwr::MVoltSnapshot snap{};
+    if (nvpwr::QueryMVoltStatus(snap, path)) {
+        const bool nvvddOk = (snap.nvvdd.vminUv == state.voltage.nvvdd.vminUv &&
+                              snap.nvvdd.relUv  == state.voltage.nvvdd.relUv &&
+                              snap.nvvdd.altUv  == state.voltage.nvvdd.altUv &&
+                              snap.nvvdd.ovUv   == state.voltage.nvvdd.ovUv);
+        const bool msvddOk = (snap.msvdd.vminUv == state.voltage.msvdd.vminUv &&
+                              snap.msvdd.relUv  == state.voltage.msvdd.relUv &&
+                              snap.msvdd.altUv  == state.voltage.msvdd.altUv &&
+                              snap.msvdd.ovUv   == state.voltage.msvdd.ovUv);
+        if (!nvvddOk || !msvddOk) {
+            SvcLog(L"voltage: readback does not match the stored offsets");
+            return false;
+        }
+        SvcLog(L"voltage: applied and verified");
+    } else {
+        SvcLog(L"voltage: applied, but readback could not be confirmed: " + snap.error);
+    }
+    return true;
+}
+
+/*
+    Re-applies the persisted state. Retries because at boot this routinely runs
+    before nvlddmkm.sys is ready; a single failure at startup must not be treated
+    as "the user's settings do not work".
+*/
+static bool ReplayDesiredState(const wchar_t* reason, int attempts = 1, int delayMs = 0) {
+    DesiredState state{};
+    std::wstring err;
+    if (!nvpwr::LoadDesiredState(state, err)) {
+        SvcLog(std::wstring(L"replay(") + reason + L"): state unreadable: " + err);
+        return false;
+    }
+    if (state.IsEmpty()) {
+        SvcLog(std::wstring(L"replay(") + reason + L"): nothing configured");
+        return true;
+    }
+
+    for (int i = 0; i < attempts; ++i) {
+        std::wstring derr;
+        if (OpenDevice(derr)) {
+            bool ok = true;
+            std::wstring stageErr;
+
+            /* Stage 1: power limit. This is the part only this project can do. */
+            if (state.powerEnabled && state.power.milliwatts) {
+                std::wstring perr;
+                if (!SendPower(state.power.milliwatts, state.power.ceilingMw,
+                               state.power.profile, perr)) {
+                    ok = false; stageErr += L"power: " + perr + L"; ";
+                }
+            }
+
+            /* Stage 2: voltage through the companion tool. Runs after power so
+               the ceiling is already raised when voltage widens what the GPU
+               will actually draw. A voltage failure does NOT undo the power
+               limit, and the log states that explicitly rather than implying the
+               whole replay failed. */
+            if (!ReplayVoltageViaCompanion(state)) {
+                ok = false;
+                stageErr += L"voltage: see the line above; the power limit remains applied; ";
+            }
+
+            if (!stageErr.empty()) {
+                SvcLog(std::wstring(L"replay(") + reason + L"): " + stageErr);
+            } else {
+                SvcLog(std::wstring(L"replay(") + reason + L"): applied");
+            }
+            g_replayed = ok;
+            return ok;
+        }
+
+        SvcLog(std::wstring(L"replay(") + reason + L"): device not ready: " + derr);
+        if (delayMs > 0) Sleep((DWORD)delayMs);
+    }
+    return false;
+}
+
+/* ------------------------------------------------------------------ */
+/* pipe protocol                                                      */
+/* ------------------------------------------------------------------ */
+
+static std::wstring HandleCommand(const std::wstring& line) {
+    std::wistringstream in(line);
+    std::wstring verb;
+    in >> verb;
+
+    if (verb == L"PING") return L"OK\r\nEND\r\n";
+
+    if (verb == L"STATUS") {
+        DesiredState st{};
+        std::wstring err;
+        nvpwr::LoadDesiredState(st, err);
+
+        std::wstringstream out;
+        out << L"OK\r\n";
+        out << L"power_enabled=" << (st.powerEnabled ? 1 : 0) << L"\r\n";
+        out << L"power_mw=" << st.power.milliwatts << L"\r\n";
+        out << L"ceiling_mw=" << st.power.ceilingMw << L"\r\n";
+        out << L"voltage_enabled=" << (st.voltage.enabled ? 1 : 0) << L"\r\n";
+        out << L"clock_enabled=" << (st.clock.enabled ? 1 : 0) << L"\r\n";
+        out << L"END\r\n";
+        return out.str();
+    }
+
+    if (verb == L"APPLY") {
+        unsigned int mw = 0, ceiling = 0, profile = 0;
+        std::wstring token;
+        while (in >> token) {
+            size_t eq = token.find(L'=');
+            if (eq == std::wstring::npos) continue;
+            std::wstring key = token.substr(0, eq);
+            unsigned int val = (unsigned int)wcstoul(token.c_str() + eq + 1, nullptr, 10);
+            if (key == L"power_mw") mw = val;
+            else if (key == L"ceiling_mw") ceiling = val;
+            else if (key == L"profile") profile = val;
+        }
+        if (mw == 0) return L"ERR zero target rejected\r\n";
+
+        std::wstring err;
+        if (!SendPower(mw, ceiling, profile, err)) return L"ERR " + err + L"\r\n";
+
+        DesiredState st{};
+        nvpwr::LoadDesiredState(st, err);
+        st.powerEnabled = true;
+        st.power.milliwatts = mw;
+        st.power.ceilingMw = ceiling;
+        st.power.profile = profile;
+        nvpwr::SaveDesiredState(st, err);
+        SvcLog(L"APPLY " + std::to_wstring(mw) + L" mW ceiling " + std::to_wstring(ceiling));
+        return L"OK\r\nEND\r\n";
+    }
+
+    if (verb == L"RESTORE") {
+        std::wstring err;
+        if (!SendRestore(err)) return L"ERR " + err + L"\r\n";
+        DesiredState st{};
+        nvpwr::LoadDesiredState(st, err);
+        st.powerEnabled = false;
+        st.power = nvpwr::PowerTarget{};
+        nvpwr::SaveDesiredState(st, err);
+        SvcLog(L"RESTORE requested");
+        return L"OK\r\nEND\r\n";
+    }
+
+    if (verb == L"SHUTDOWN") {
+        SvcLog(L"SHUTDOWN requested over the pipe");
+        SetEvent(g_stopEvent);
+        return L"OK\r\nEND\r\n";
+    }
+
+    return L"ERR unknown command\r\n";
+}
+
+static bool ReadRequest(HANDLE pipe, std::wstring& request) {
+    request.clear();
+
+    /* The wire format is UTF-8, so bytes are accumulated narrow and converted
+       once. Appending the raw bytes straight into a std::wstring would both fail
+       to compile and, if forced, produce mangled text. */
+    std::string raw;
+    char buf[1024];
+    for (;;) {
+        DWORD got = 0;
+        if (!ReadFile(pipe, buf, sizeof(buf), &got, nullptr)) break;
+        if (got == 0) break;
+        raw.append(buf, got);
+        if (raw.find('\n') != std::string::npos) break;
+    }
+    if (raw.empty()) return false;
+
+    int n = MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), (int)raw.size(), nullptr, 0);
+    std::wstring wide((size_t)n, L'\0');
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), (int)raw.size(), &wide[0], n);
+    while (!wide.empty() && (wide.back() == L'\r' || wide.back() == L'\n')) wide.pop_back();
+    request = wide;
+    return !request.empty();
+}
+
+static bool WriteResponse(HANDLE pipe, const std::wstring& response) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, response.c_str(), (int)response.size(),
+                                nullptr, 0, nullptr, nullptr);
+    std::string utf8((size_t)n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, response.c_str(), (int)response.size(),
+                        &utf8[0], n, nullptr, nullptr);
+    DWORD total = 0;
+    while (total < utf8.size()) {
+        DWORD wrote = 0;
+        if (!WriteFile(pipe, utf8.data() + total, (DWORD)(utf8.size() - total), &wrote, nullptr))
+            return false;
+        if (wrote == 0) return false;
+        total += wrote;
+    }
+    FlushFileBuffers(pipe);
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* service body                                                       */
+/* ------------------------------------------------------------------ */
+
+static DWORD WINAPI ServiceThread(LPVOID) {
+    SetServiceState(SERVICE_RUNNING);
+
+    /* First replay: retry for a while because the display stack is usually not
+       ready immediately after boot. */
+    ReplayDesiredState(L"startup", /*attempts*/ 12, /*delayMs*/ 5000);
+
+    HANDLE events[2] = { g_stopEvent, nullptr };
+
+    for (;;) {
+        /* Create the pipe before waiting so a client can always connect. */
+        g_pipe = CreateNamedPipeW(nvpwr::kPipeName,
+                                  PIPE_ACCESS_DUPLEX,
+                                  PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE |
+                                  PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                                  1, 8192, 8192, 0, nullptr);
+        if (g_pipe == INVALID_HANDLE_VALUE) {
+            SvcLog(L"CreateNamedPipe failed; retrying in 2 s");
+            if (WaitForSingleObject(g_stopEvent, 2000) == WAIT_OBJECT_0) break;
+            continue;
+        }
+
+        events[1] = g_pipe;
+        DWORD wait = WaitForMultipleObjects(2, events, FALSE, INFINITE);
+        if (wait == WAIT_OBJECT_0) {          /* stop requested */
+            CloseHandle(g_pipe);
+            g_pipe = nullptr;
+            break;
+        }
+
+        BOOL connected = ConnectNamedPipe(g_pipe, nullptr)
+            ? TRUE
+            : (GetLastError() == ERROR_PIPE_CONNECTED);
+
+        if (connected) {
+            std::wstring request;
+            if (ReadRequest(g_pipe, request)) {
+                std::wstring response = HandleCommand(request);
+                WriteResponse(g_pipe, response);
+            }
+            DisconnectNamedPipe(g_pipe);
+        }
+        CloseHandle(g_pipe);
+        g_pipe = nullptr;
+    }
+
+    SetServiceState(SERVICE_STOPPED);
+    return 0;
+}
+
+static DWORD WINAPI ServiceControl(DWORD control, DWORD, LPVOID, LPVOID) {
+    switch (control) {
+    case SERVICE_CONTROL_STOP:
+    case SERVICE_CONTROL_SHUTDOWN:
+        SetServiceState(SERVICE_STOP_PENDING, NO_ERROR, 5000);
+        if (g_stopEvent) SetEvent(g_stopEvent);
+        return NO_ERROR;
+    case SERVICE_CONTROL_INTERROGATE:
+        SetServiceStatus(g_statusHandle, &g_status);
+        return NO_ERROR;
+    default:
+        return ERROR_CALL_NOT_IMPLEMENTED;
+    }
+}
+
+static void WINAPI ServiceMain(DWORD, LPWSTR*) {
+    g_statusHandle = RegisterServiceCtrlHandlerExW(nvpwr::kServiceName, ServiceControl, nullptr);
+    if (!g_statusHandle) return;
+
+    g_status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    g_status.dwServiceSpecificExitCode = 0;
+    SetServiceState(SERVICE_START_PENDING, NO_ERROR, 8000);
+
+    g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!g_stopEvent) {
+        SetServiceState(SERVICE_STOPPED, GetLastError());
+        return;
+    }
+
+    SvcLog(L"service starting");
+    ServiceThread(nullptr);
+    SvcLog(L"service stopped");
+}
+
+int wmain(int argc, wchar_t** argv) {
+    /* Console mode exists for diagnosis: it runs the same body without the SCM
+       so a failure can be watched directly instead of only in the event log. */
+    bool console = false;
+    for (int i = 1; i < argc; ++i) {
+        if (_wcsicmp(argv[i], L"--console") == 0) console = true;
+    }
+
+    if (console) {
+        g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        SvcLog(L"service starting in console mode");
+        wprintf(L"NvpwrSvc running in console mode. Press Ctrl+C to stop.\n");
+        ReplayDesiredState(L"console-startup", 1, 0);
+        ServiceThread(nullptr);
+        return 0;
+    }
+
+    SERVICE_TABLE_ENTRYW table[] = {
+        { const_cast<LPWSTR>(nvpwr::kServiceName), ServiceMain },
+        { nullptr, nullptr }
+    };
+    if (!StartServiceCtrlDispatcherW(table)) {
+        /* Not launched by the SCM. Report the hint rather than failing silently. */
+        DWORD e = GetLastError();
+        if (e == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
+            wprintf(L"NvpwrSvc must be started by the Service Control Manager.\n");
+            wprintf(L"Run \"NvpwrSvc.exe --console\" to run it interactively.\n");
+        }
+        return (int)e;
+    }
+    return 0;
+}
