@@ -126,12 +126,19 @@ namespace NvpwrControl
             return s;
         }
 
-        /// <summary>Short state for the chip itself. The chip is a status light, not a control.</summary>
+        /// <summary>
+        /// One or two words for the chip. Nothing more.
+        ///
+        /// The chip already carries the state in its colour, and says whether it can be acted
+        /// on by being clickable, so spelling either of those out beside the name only makes the
+        /// row longer than it needs to be. What the state means, why it is that way, and what to
+        /// do about it all live in the tooltip.
+        /// </summary>
         public static string Describe(Status s)
         {
             if (s.ActiveThisBoot) return "已生效";
             if (!s.PartitionFound || !s.FilesPresent) return "未安装";
-            return "已安装，本次未生效";
+            return "未生效";
         }
 
         /// <summary>

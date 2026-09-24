@@ -862,7 +862,7 @@ namespace NvpwrControl
                 Name = "Secure Boot",
                 Ok = sb == 0,
                 Blocking = sb == 1,
-                Detail = sb == null ? "未知" : (sb == 1 ? "已开启（需在 BIOS 关闭）" : "已关闭"),
+                Detail = sb == null ? "未知" : (sb == 1 ? "已开启" : "已关闭"),
                 ActionId = null,
                 ManualHint = "这个开关在主板固件里，程序无法修改。\n" +
                              "重启进入 BIOS → Security → Secure Boot → Disabled → 保存退出。\n" +
@@ -928,7 +928,7 @@ namespace NvpwrControl
                 Ok = !vbsOn,
                 Blocking = vbsOn,
                 Detail = vbsOn
-                    ? "已开启（点击关闭）"
+                    ? "已开启"
                     : (vbs == null && hvci == null ? "未知" : "已关闭"),
                 ActionId = "vbs",
                 ClickAction = vbsOn ? "关闭虚拟化安全" : "恢复虚拟化安全",
@@ -946,7 +946,7 @@ namespace NvpwrControl
                 Name = "驱动阻止列表",
                 Ok = block == 0,
                 Blocking = block == 1,
-                Detail = block == null ? "未知" : (block == 1 ? "已开启（点击关闭）" : "已关闭"),
+                Detail = block == null ? "未知" : (block == 1 ? "已开启" : "已关闭"),
                 ActionId = "blocklist",
                 ClickAction = block == 1 ? "关闭驱动阻止列表" : "开启驱动阻止列表",
                 ManualHint = "位置：Windows 安全中心 → 设备安全性 → 内核隔离 → Microsoft 易受攻击的驱动程序阻止列表。"
@@ -987,7 +987,7 @@ namespace NvpwrControl
                 Name = "CI 策略",
                 Ok = present.Count == 0,
                 Blocking = present.Count > 0,
-                Detail = present.Count == 0 ? "已清除" : ("还有 " + present.Count + " 个策略文件（点击清除）"),
+                Detail = present.Count == 0 ? "已清除" : "未清除",
                 ActionId = "cipolicy",
                 ClickAction = present.Count == 0 ? "恢复 CI 策略文件" : "清除 CI 策略文件",
                 ManualHint = "已签名的 WDAC 策略独立于注册表开关生效。清除会先备份到程序数据目录，可还原。\n" +
