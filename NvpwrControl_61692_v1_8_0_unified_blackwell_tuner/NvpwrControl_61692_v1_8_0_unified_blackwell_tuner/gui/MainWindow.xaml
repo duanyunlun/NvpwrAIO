@@ -382,7 +382,7 @@
                             <TextBlock Grid.Column="1" x:Name="MaxVoltLabel" Style="{StaticResource BigSub}"
                                        Foreground="{StaticResource Info}" FontWeight="SemiBold" Text="— mV"/>
                         </Grid>
-                        <Slider x:Name="MaxVoltSlider" Minimum="1025" Maximum="1150" Value="1025"
+                        <Slider x:Name="MaxVoltSlider" Minimum="445" Maximum="1150" Value="1025"
                                 TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
                                 ValueChanged="OnMaxVoltSliderChanged"/>
 

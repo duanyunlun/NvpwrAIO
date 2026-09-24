@@ -48,6 +48,13 @@ namespace NvpwrControl
 
 		private const int OV_BASE_MV = 1200;
 
+		/// <summary>
+		/// Lower end of the absolute voltage sliders, taken from nvvdd_device_range_uv. Used as a
+		/// floor when clamping the minimum, so the slider can never be squeezed below the smallest
+		/// voltage the rail reports.
+		/// </summary>
+		private const int ABS_MIN_MV = 445;
+
 		private int _absMinMv = 445;
 
 		private int _absMaxMv = 1280;
@@ -559,16 +566,26 @@ namespace NvpwrControl
 				_absMaxMv = (int)(mVoltSnapshot.NvvddMaxUv / 1000);
 				if (MinVoltSlider != null)
 				{
+					// Only the floor and the tick step come from the device range. The minimum's
+					// upper bound is not the device maximum — it is whatever ceiling is in force,
+					// which is narrower, so ClampMinSlider sets it from the current limits below.
 					MinVoltSlider.Minimum = _absMinMv;
-					MinVoltSlider.Maximum = _absMaxMv;
-					MaxVoltSlider.Minimum = _absMinMv;
-					MaxVoltSlider.Maximum = _absMaxMv;
-					Slider minVoltSlider = MinVoltSlider;
-					double tickFrequency = (MaxVoltSlider.TickFrequency = ((mVoltSnapshot.NvvddStepUv > 0) ? ((double)mVoltSnapshot.NvvddStepUv / 1000.0) : 5.0));
-					minVoltSlider.TickFrequency = tickFrequency;
+					MinVoltSlider.TickFrequency = ((mVoltSnapshot.NvvddStepUv > 0) ? ((double)mVoltSnapshot.NvvddStepUv / 1000.0) : 5.0);
+					ClampMinSlider();
 				}
 			}
-			UpdateVoltOffsetLabel();
+
+			// Note what is deliberately NOT done here: the pending sliders are not written back.
+			//
+			// This runs on the one-second timer, and pushing _relOffsetMv / _ovOffsetMv into the
+			// controls made the refresh fight the user. Choosing 1000 mV routes the request to OV
+			// and leaves REL at zero; the next tick then set the maximum slider back to
+			// 1025 (= baseline + 0), which fired its handler, took the "at or above baseline"
+			// branch and cleared the OV offset again. The edit vanished one second after it was
+			// made.
+			//
+			// The sliders are the source of truth for pending edits; only an explicit load (slot,
+			// undo, reset) writes into them, and that goes through PushStateToControls.
 		}
 
 		private void RefreshReadout()
@@ -692,6 +709,7 @@ namespace NvpwrControl
 			UpdateOvLabels();
 			SetSlider(MinVoltSlider, MinVoltLabel, _baseMinMv + _vminOffsetMv);
 			SetSlider(MaxVoltSlider, MaxVoltLabel, _baseMaxMv + _relOffsetMv);
+			ClampMinSlider();
 			UpdateOffsetSummary();
 		}
 
@@ -741,15 +759,64 @@ namespace NvpwrControl
 			}
 		}
 
+		/// <summary>
+		/// The maximum, as a voltage the user picks, routed to whichever offset can produce it.
+		///
+		/// REL accepts only 0…+125 on this rail (1025…1150 mV) and the tool refuses negative
+		/// values with "within the application bounds", so REL alone cannot lower the ceiling —
+		/// which is why setting 1000 mV came back as "mVolt+ 未保留 NVDD 偏移（请求 rel=-25 mV,
+		/// 回读 rel=0 mV）". OV can lower it, and does: its ceiling sits at 1200 mV and pulling it
+		/// down caps the effective maximum once it passes below the REL limit. The companion tool
+		/// reaches its 445-1150 range the same way.
+		///
+		/// ALT/OP is always left at zero. This rail driver reports no operating limit for it and
+		/// the tool rejects any non-zero request outright with "The driver does not report an
+		/// operating limit (ALT/OP) for this rail." Copying the REL value into it, which this
+		/// method used to do, made every apply fail.
+		/// </summary>
 		private void OnMaxVoltSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
 		{
-			if (MaxVoltLabel != null)
+			if (MaxVoltLabel == null)
 			{
-				int num = (int)Math.Round(e.NewValue);
+				return;
+			}
+			int num = (int)Math.Round(e.NewValue);
+			_altOffsetMv = 0;
+			if (num >= _baseMaxMv)
+			{
 				_relOffsetMv = num - _baseMaxMv;
-				_altOffsetMv = _relOffsetMv;
-				MaxVoltLabel.Text = num + " mV";
-				UpdateOffsetSummary();
+				_ovOffsetMv = 0;
+			}
+			else
+			{
+				_relOffsetMv = 0;
+				_ovOffsetMv = num - OV_BASE_MV;
+			}
+			MaxVoltLabel.Text = num + " mV";
+			SetSlider(OvSlider, null, _ovOffsetMv);
+			UpdateOvLabels();
+			UpdateOffsetSummary();
+			ClampMinSlider();
+		}
+
+		/// <summary>
+		/// Holds the minimum at or below the ceiling in force.
+		///
+		/// The tool rejects a minimum above the upper limits with "The minimum-voltage offset
+		/// conflicts with the current upper voltage limits", so the slider is kept inside what can
+		/// be written instead of being allowed to build a request that is certain to fail.
+		/// </summary>
+		private void ClampMinSlider()
+		{
+			if (MinVoltSlider == null)
+			{
+				return;
+			}
+			int num = Math.Min(_baseMaxMv + _relOffsetMv, OV_BASE_MV + _ovOffsetMv);
+			MinVoltSlider.Maximum = Math.Max(ABS_MIN_MV, num);
+			if (MinVoltSlider.Value > MinVoltSlider.Maximum)
+			{
+				MinVoltSlider.Value = MinVoltSlider.Maximum;
 			}
 		}
 
@@ -757,7 +824,7 @@ namespace NvpwrControl
 		{
 			if (OvLabel != null)
 			{
-				OvLabel.Text = "待下发 " + Signed(_ovOffsetMv) + "  →  OV 限值 " + (1200 + _ovOffsetMv) + " mV";
+				OvLabel.Text = "待下发 " + Signed(_ovOffsetMv) + "  →  OV 限值 " + (OV_BASE_MV + _ovOffsetMv) + " mV";
 			}
 		}
 
@@ -767,7 +834,7 @@ namespace NvpwrControl
 			{
 				MinFormulaLabel.Text = "下限  " + _baseMinMv + " + " + _vminOffsetMv + " = " + (_baseMinMv + _vminOffsetMv) + " mV";
 				int num = _baseMaxMv + _relOffsetMv;
-				int num2 = 1200 + _ovOffsetMv;
+				int num2 = OV_BASE_MV + _ovOffsetMv;
 				bool flag = num2 < num;
 				MaxFormulaLabel.Text = "上限  " + _baseMaxMv + " + " + _relOffsetMv + " = " + num + " mV";
 				if (OvParenthetical != null)
@@ -782,11 +849,9 @@ namespace NvpwrControl
 		private void OnOvSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
 		{
 			_ovOffsetMv = (int)Math.Round(e.NewValue);
-			if (OvLabel != null)
-			{
-				OvLabel.Text = "待下发 " + Signed(_ovOffsetMv);
-			}
+			UpdateOvLabels();
 			UpdateOffsetSummary();
+			ClampMinSlider();
 		}
 
 		private void OnVoltReset(object sender, RoutedEventArgs e)
