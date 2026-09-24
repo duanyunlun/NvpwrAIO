@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Nvpwr Control 1.9.0"
-        Width="1293" Height="756"
+        Width="873" Height="756"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
         Background="#10131A"
@@ -236,10 +236,9 @@
             </Grid>
         </Border>
 
-        <!-- ===================== three cards ===================== -->
+        <!-- ===================== two cards ===================== -->
         <Grid Grid.Row="1" Margin="14,12,14,0">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
@@ -321,13 +320,92 @@
                         </StackPanel>
 
                         <TextBlock x:Name="PwHint" Style="{StaticResource Caption}" Margin="0,10,0,0"/>
+
+                        <!-- Frequency moved into this card. It has the same readouts and the same
+                             stepper row shape, and a card of its own held four controls with a lot
+                             of empty space below them. -->
+                        <Border Height="1" Background="{StaticResource CardBorder}" Margin="0,16,0,0"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                            <StackPanel Margin="0,0,24,0">
+                                <TextBlock x:Name="ClkNow" Style="{StaticResource BigNumber}"
+                                           Foreground="{StaticResource TextMain}" Text="—"/>
+                                <TextBlock Text="核心频率" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
+                            </StackPanel>
+                            <StackPanel Margin="0,0,24,0">
+                                <TextBlock x:Name="MemNow" Style="{StaticResource BigNumber}"
+                                           Foreground="{StaticResource TextMain}" Text="—"/>
+                                <TextBlock Text="显存时钟" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
+                            </StackPanel>
+                            <StackPanel>
+                                <TextBlock x:Name="UtilNow" Style="{StaticResource BigNumber}"
+                                           Foreground="{StaticResource TextMain}" Text="—"/>
+                                <TextBlock Text="占用率" Style="{StaticResource BigSub}"
+                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!--
+                            Same shape as the power card's control row: the low end of the range on the
+                            left, the value being set in the middle, the high end on the right, and a
+                            stepper either side. The middle is editable here rather than a readout,
+                            because a clock offset is a number people usually know before they start
+                            and stepping to it 50 MHz at a time would be tedious.
+                        -->
+                        <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
+                            <TextBlock Text="核心" Style="{StaticResource RowLabel}" Width="38"/>
+                            <TextBlock x:Name="ClkCoreMinLabel" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Margin="0,0,6,0" Text="—"/>
+                            <Button Content="−" Style="{StaticResource Step}" Click="OnClkCoreMinus"/>
+                            <TextBox x:Name="ClkCore" Style="{StaticResource Input}" Width="58"
+                                     PreviewTextInput="OnClockIntegerOnly"/>
+                            <Button Content="+" Style="{StaticResource Step}" Margin="6,0,6,0"
+                                    Click="OnClkCorePlus"/>
+                            <TextBlock x:Name="ClkCoreMaxLabel" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Text="—"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <TextBlock Text="显存" Style="{StaticResource RowLabel}" Width="38"/>
+                            <TextBlock x:Name="ClkMemMinLabel" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Margin="0,0,6,0" Text="—"/>
+                            <Button Content="−" Style="{StaticResource Step}" Click="OnClkMemMinus"/>
+                            <TextBox x:Name="ClkMem" Style="{StaticResource Input}" Width="58"
+                                     PreviewTextInput="OnClockIntegerOnly"/>
+                            <Button Content="+" Style="{StaticResource Step}" Margin="6,0,6,0"
+                                    Click="OnClkMemPlus"/>
+                            <TextBlock x:Name="ClkMemMaxLabel" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Text="—"/>
+                        </StackPanel>
+
+                        <StackPanel x:Name="ClkXbarRow" Orientation="Horizontal" Margin="0,10,0,0">
+                            <TextBlock Text="XBAR" Style="{StaticResource RowLabel}" Width="38"/>
+                            <TextBlock x:Name="ClkXbarMinLabel" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Margin="0,0,6,0" Text="—"/>
+                            <Button Content="−" Style="{StaticResource Step}" Click="OnClkXbarMinus"/>
+                            <TextBox x:Name="ClkXbar" Style="{StaticResource Input}" Width="58"
+                                     PreviewTextInput="OnClockIntegerOnly"/>
+                            <Button Content="+" Style="{StaticResource Step}" Margin="6,0,6,0"
+                                    Click="OnClkXbarPlus"/>
+                            <TextBlock x:Name="ClkXbarMaxLabel" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Text="—"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                            <Button Content="应用频率" Style="{StaticResource BtnPrimary}" MinWidth="100"
+                                    Click="OnApplyClocks"/>
+                            <Button Content="重置" Style="{StaticResource BtnDanger}" Margin="0"
+                                    Click="OnResetClocks"/>
+                        </StackPanel>
+
                     </StackPanel>
 
                 </Grid>
             </Border>
 
             <!-- ===== 电压 ===== -->
-            <Border Grid.Column="1" Style="{StaticResource Card}" Margin="6,0,6,0">
+            <Border Grid.Column="1" Style="{StaticResource Card}" Margin="6,0,0,0">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -489,104 +567,6 @@
                 </Grid>
             </Border>
 
-            <!-- ===== 频率 ===== -->
-            <Border Grid.Column="2" Style="{StaticResource Card}" Margin="6,0,0,0">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-
-                    <StackPanel Grid.Row="0">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Grid.Column="0" Orientation="Horizontal">
-                                <Border Width="3" CornerRadius="2" Margin="0,1,8,1"
-                                        Background="{StaticResource Warn}"/>
-                                <TextBlock Text="频率" Style="{StaticResource SectionTitle}"/>
-                            </StackPanel>
-                        </Grid>
-
-                        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
-                            <StackPanel Margin="0,0,24,0">
-                                <TextBlock x:Name="ClkNow" Style="{StaticResource BigNumber}"
-                                           Foreground="{StaticResource TextMain}" Text="—"/>
-                                <TextBlock Text="核心频率" Style="{StaticResource BigSub}"
-                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
-                            </StackPanel>
-                            <StackPanel Margin="0,0,24,0">
-                                <TextBlock x:Name="MemNow" Style="{StaticResource BigNumber}"
-                                           Foreground="{StaticResource TextMain}" Text="—"/>
-                                <TextBlock Text="显存时钟" Style="{StaticResource BigSub}"
-                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
-                            </StackPanel>
-                            <StackPanel>
-                                <TextBlock x:Name="UtilNow" Style="{StaticResource BigNumber}"
-                                           Foreground="{StaticResource TextMain}" Text="—"/>
-                                <TextBlock Text="占用率" Style="{StaticResource BigSub}"
-                                           Foreground="{StaticResource TextDim}" Margin="0,1,0,0"/>
-                            </StackPanel>
-                        </StackPanel>
-
-                        <!--
-                            Same shape as the power card's control row: the low end of the range on the
-                            left, the value being set in the middle, the high end on the right, and a
-                            stepper either side. The middle is editable here rather than a readout,
-                            because a clock offset is a number people usually know before they start
-                            and stepping to it 50 MHz at a time would be tedious.
-                        -->
-                        <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
-                            <TextBlock Text="核心" Style="{StaticResource RowLabel}" Width="38"/>
-                            <TextBlock x:Name="ClkCoreMinLabel" Style="{StaticResource Caption}"
-                                       VerticalAlignment="Center" Margin="0,0,6,0" Text="—"/>
-                            <Button Content="−" Style="{StaticResource Step}" Click="OnClkCoreMinus"/>
-                            <TextBox x:Name="ClkCore" Style="{StaticResource Input}" Width="58"
-                                     PreviewTextInput="OnClockIntegerOnly"/>
-                            <Button Content="+" Style="{StaticResource Step}" Margin="6,0,6,0"
-                                    Click="OnClkCorePlus"/>
-                            <TextBlock x:Name="ClkCoreMaxLabel" Style="{StaticResource Caption}"
-                                       VerticalAlignment="Center" Text="—"/>
-                        </StackPanel>
-
-                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                            <TextBlock Text="显存" Style="{StaticResource RowLabel}" Width="38"/>
-                            <TextBlock x:Name="ClkMemMinLabel" Style="{StaticResource Caption}"
-                                       VerticalAlignment="Center" Margin="0,0,6,0" Text="—"/>
-                            <Button Content="−" Style="{StaticResource Step}" Click="OnClkMemMinus"/>
-                            <TextBox x:Name="ClkMem" Style="{StaticResource Input}" Width="58"
-                                     PreviewTextInput="OnClockIntegerOnly"/>
-                            <Button Content="+" Style="{StaticResource Step}" Margin="6,0,6,0"
-                                    Click="OnClkMemPlus"/>
-                            <TextBlock x:Name="ClkMemMaxLabel" Style="{StaticResource Caption}"
-                                       VerticalAlignment="Center" Text="—"/>
-                        </StackPanel>
-
-                        <StackPanel x:Name="ClkXbarRow" Orientation="Horizontal" Margin="0,10,0,0">
-                            <TextBlock Text="XBAR" Style="{StaticResource RowLabel}" Width="38"/>
-                            <TextBlock x:Name="ClkXbarMinLabel" Style="{StaticResource Caption}"
-                                       VerticalAlignment="Center" Margin="0,0,6,0" Text="—"/>
-                            <Button Content="−" Style="{StaticResource Step}" Click="OnClkXbarMinus"/>
-                            <TextBox x:Name="ClkXbar" Style="{StaticResource Input}" Width="58"
-                                     PreviewTextInput="OnClockIntegerOnly"/>
-                            <Button Content="+" Style="{StaticResource Step}" Margin="6,0,6,0"
-                                    Click="OnClkXbarPlus"/>
-                            <TextBlock x:Name="ClkXbarMaxLabel" Style="{StaticResource Caption}"
-                                       VerticalAlignment="Center" Text="—"/>
-                        </StackPanel>
-
-                        <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                            <Button Content="应用频率" Style="{StaticResource BtnPrimary}" MinWidth="100"
-                                    Click="OnApplyClocks"/>
-                            <Button Content="重置" Style="{StaticResource BtnDanger}" Margin="0"
-                                    Click="OnResetClocks"/>
-                        </StackPanel>
-                    </StackPanel>
-
-                </Grid>
-            </Border>
         </Grid>
 
         <!-- ===== bottom bar: prerequisites, actions ===== -->
