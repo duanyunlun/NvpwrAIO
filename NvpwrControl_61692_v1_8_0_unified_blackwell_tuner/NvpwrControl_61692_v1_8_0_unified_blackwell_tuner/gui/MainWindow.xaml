@@ -599,7 +599,7 @@
                     <StackPanel Grid.Column="1" Orientation="Horizontal">
                         <Button Content="撤销" Style="{StaticResource Btn}" Click="OnUndo"/>
                         <Button Content="恢复默认" Style="{StaticResource BtnDanger}" Click="OnRestoreDefaults"/>
-                        <Button Content="配置槽位…" Style="{StaticResource Btn}" Click="OnOpenSlots"/>
+                        <Button Content="保存配置" Style="{StaticResource Btn}" Click="OnOpenSlots"/>
                         <Button Content="一键应用全部" Style="{StaticResource BtnPrimary}" Click="OnApplyAll"/>
                         <Button x:Name="ServiceButton" Content="安装服务" Style="{StaticResource Btn}"
                                 Margin="0" Click="OnToggleService"/>

@@ -161,11 +161,6 @@ namespace NvpwrControl
             Store.Log("已删除槽位 " + (index + 1));
         }
 
-        private void OnRestoreDefaults(object sender, RoutedEventArgs e)
-        {
-            _owner.RestoreDefaults();
-            RebuildCombo(Selected);
-        }
 
         private void OnClose(object sender, RoutedEventArgs e)
         {
