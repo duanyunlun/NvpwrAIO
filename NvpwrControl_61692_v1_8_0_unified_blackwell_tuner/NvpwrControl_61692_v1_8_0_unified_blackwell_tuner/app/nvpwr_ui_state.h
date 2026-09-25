@@ -148,6 +148,29 @@ struct DesiredState {
     */
     std::wstring mvoltPath;
 
+    /*
+        The factory power wall, in watts. Recorded ONCE, then never rewritten.
+
+        WHY this has to be a record and not a live reading: a live reading of the
+        power limit cannot tell a factory wall from one this program raised — both
+        are just "UPPER" in driver memory. The only way to know what the card
+        shipped with is to write it down while the answer is still certain, before
+        anything has touched the wall, and then refuse to touch that record again.
+
+        WHY both entry points carry it: the service starts at boot and the GUI is
+        launched by hand, and either can be the first to run on a given boot. The
+        window in which the value is knowable is exactly "before the first apply",
+        so whichever process starts first while the field is still absent fills it
+        in. Leaving it to the GUI meant a boot where the service replayed a raised
+        wall first, after which the GUI could only read a value already lost.
+
+        powerFloorProfile is the GPU profile the value was captured for. A different
+        card, or a VBIOS change, invalidates the record — and that comparison is the
+        ONLY reason it is ever rewritten.
+    */
+    unsigned int powerFloorW = 0;
+    unsigned int powerFloorProfile = 0;
+
     /* Auto-start behaviour (mirrors the tray menu) */
     bool startWithWindows = false;
     bool startMinimized   = false;

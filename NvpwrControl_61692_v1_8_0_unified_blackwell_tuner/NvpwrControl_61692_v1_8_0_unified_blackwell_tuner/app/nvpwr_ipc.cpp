@@ -186,7 +186,15 @@ void SerializeState(const DesiredState& st, const std::wstring& prefix,
     o << prefix << L"clock_memory_mhz=" << st.clock.memoryOffsetMhz;        out.push_back(o.str()); o.str(L"");
     o << prefix << L"clock_xbar_mhz=" << st.clock.xbarOffsetMhz;            out.push_back(o.str()); o.str(L"");
     o << prefix << L"start_with_windows=" << (st.startWithWindows ? 1 : 0); out.push_back(o.str()); o.str(L"");
-    o << prefix << L"start_minimized=" << (st.startMinimized ? 1 : 0);       out.push_back(o.str());
+    o << prefix << L"start_minimized=" << (st.startMinimized ? 1 : 0);       out.push_back(o.str()); o.str(L"");
+    /*
+        The recorded factory wall. Both the GUI and the service read and write these,
+        and the key names match the ones the C# side already used for power_floor_w —
+        two spellings of one record would be worse than none, because each side would
+        then keep filling in the other's blank.
+    */
+    o << prefix << L"power_floor_w=" << st.powerFloorW;                     out.push_back(o.str()); o.str(L"");
+    o << prefix << L"power_floor_profile=" << st.powerFloorProfile;         out.push_back(o.str());
     /* Free-form string keys last, so the numeric block above stays contiguous
        and easy to read in the file. */
     out.push_back(prefix + L"mvolt_path=" + SanitizePathForStorage(st.mvoltPath));
@@ -238,6 +246,8 @@ void DeserializeState(const KvList& kv, const std::wstring& prefix,
         else if (key == L"clock_xbar_mhz")     out.clock.xbarOffsetMhz = (long)n;
         else if (key == L"start_with_windows") out.startWithWindows = (n != 0);
         else if (key == L"start_minimized")    out.startMinimized = (n != 0);
+        else if (key == L"power_floor_w")      out.powerFloorW = (unsigned int)n;
+        else if (key == L"power_floor_profile") out.powerFloorProfile = (unsigned int)n;
         else --recognised;   /* not a key we know: do not count it */
     }
 }

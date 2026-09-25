@@ -94,6 +94,17 @@ namespace NvpwrControl
         public int PowerFloorW;
 
         /// <summary>
+        /// The GPU profile PowerFloorW was captured for.
+        ///
+        /// A different profile means different hardware or a different VBIOS, and therefore a
+        /// different factory wall — it is the only thing that may invalidate the record besides
+        /// the record being absent. The service writes both fields together; this side must
+        /// carry the profile through unchanged, or the service would find its own value paired
+        /// with a zero profile on the next start and re-capture every time.
+        /// </summary>
+        public uint PowerFloorProfile;
+
+        /// <summary>
         /// The system boot time at which PowerFloorW was recorded, as ticks.
         ///
         /// Audit only — nothing branches on it. It answers "when was this captured", which is the
@@ -239,6 +250,7 @@ namespace NvpwrControl
             b.AppendLine(p + "power_ceiling_mw=" + s.CeilingMw);
             b.AppendLine(p + "power_profile=" + s.Profile);
             b.AppendLine(p + "power_floor_w=" + s.PowerFloorW);
+            b.AppendLine(p + "power_floor_profile=" + s.PowerFloorProfile);
             b.AppendLine(p + "power_floor_boot=" + s.PowerFloorBoot);
             b.AppendLine(p + "voltage_enabled=" + (s.Voltage.Enabled ? 1 : 0));
             b.AppendLine(p + "voltage_applier=1");   // 1 = companion tool
@@ -308,6 +320,7 @@ namespace NvpwrControl
             s.CeilingMw = ceiling == 0 ? Driver.DefaultCeilingMw : ceiling;
             s.Profile = (uint)num("power_profile");
             s.PowerFloorW = (int)num("power_floor_w");
+            s.PowerFloorProfile = (uint)num("power_floor_profile");
             s.PowerFloorBoot = num("power_floor_boot");
 
             s.Voltage.Enabled = num("voltage_enabled") != 0;

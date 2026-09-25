@@ -42,6 +42,49 @@ static void PrintPower(const char* label, ULONG v)
     else std::printf("%-20s : %lu (%.3f W)\n", label, v, v / 1000.0);
 }
 
+/*
+    The power window the driver will actually accept.
+
+    This used to be a table hardcoded here, one row per board, and it disagreed with
+    the kernel side: the CLI capped the 5080 and 5090 at 225 W and the 4090 at 250 W,
+    while POWER_HIGH_MAX and POWER_4090_MAX in driver.c are both POWER_CEILING_DEV,
+    which is 350 W. The GUI never had the problem because it asks the driver --
+    Driver.ProfileRange builds its window from the ceiling the driver reports.
+
+    The effect of the disagreement was quiet and badly misleading. `set 5090 250`
+    was rejected, so the value stayed at whatever had been set before, and a run
+    that was meant to measure 250 W measured 225 W instead and looked like a plateau
+    that does not exist. Nothing in the output said the request had been dropped.
+
+    So the range now comes from the driver, which is the authority, and the numbers
+    it returns are printed both in the error message and in status. The driver still
+    validates the target itself; this is only so the CLI can refuse early and say why.
+*/
+struct PowerRange
+{
+    ULONG Lo, Hi, Ceiling, Session;
+    bool FromDriver;
+};
+
+static PowerRange QueryRange(HANDLE h)
+{
+    PowerRange r{ 100000u, 350000u, 350000u, 350000u, false };
+
+    NVPWR_STATUS s{};
+    DWORD got = 0;
+    if (!DeviceIoControl(h, IOCTL_NVPWR_STATUS, nullptr, 0, &s, sizeof(s), &got, nullptr) || got < sizeof(s))
+    {
+        return r;
+    }
+
+    r.FromDriver = true;
+    r.Ceiling = (s.CeilingMax != 0 && s.CeilingMax != 0xFFFFFFFFu) ? s.CeilingMax : 350000u;
+    r.Session = (s.SessionMax != 0 && s.SessionMax != 0xFFFFFFFFu) ? s.SessionMax : r.Ceiling;
+    r.Lo = (s.SupportedMin != 0 && s.SupportedMin != 0xFFFFFFFFu) ? s.SupportedMin : 100000u;
+    r.Hi = (s.SupportedMax != 0 && s.SupportedMax != 0xFFFFFFFFu) ? s.SupportedMax : r.Ceiling;
+    return r;
+}
+
 static bool ShowStatus(HANDLE h)
 {
     NVPWR_STATUS s{};
@@ -68,6 +111,15 @@ static bool ShowStatus(HANDLE h)
     PrintPower("Current effective", s.CurrentEffective);
     PrintPower("Current F7", s.CurrentF7Value);
     PrintPower("Applied target", s.AppliedTarget);
+
+    // The window and the two ceilings, as the driver reports them. Without these the
+    // only way to learn the real limit was to binary-search the client's own table.
+    if (s.SupportedMax != 0 && s.SupportedMax != 0xFFFFFFFFu)
+        std::printf("Supported window     : %lu..%lu W\n", s.SupportedMin / 1000, s.SupportedMax / 1000);
+    if (s.CeilingMax != 0 && s.CeilingMax != 0xFFFFFFFFu)
+        std::printf("Driver ceiling       : %lu W\n", s.CeilingMax / 1000);
+    if (s.SessionMax != 0 && s.SessionMax != 0xFFFFFFFFu)
+        std::printf("Session ceiling      : %lu W\n", s.SessionMax / 1000);
     return true;
 }
 
@@ -99,31 +151,36 @@ int wmain(int argc, wchar_t** argv)
         ULONG profile = ParseProfile(argv[2]);
         wchar_t* end = nullptr;
         unsigned long watts = wcstoul(argv[3], &end, 10);
+
+        PowerRange range = QueryRange(h);
+        ULONGLONG targetMw = (ULONGLONG)watts * 1000ull;
+
         bool valid = end && *end == L'\0' && profile != NvpwrProfileUnknown;
-        if (profile == NvpwrProfileRtx5050Laptop || profile == NvpwrProfileRtx5060Laptop || profile == NvpwrProfileRtx5070Laptop)
-            valid = valid && watts >= 120 && watts <= 140 && (watts % 5) == 0;
-        else if (profile == NvpwrProfileRtx5070TiLaptop)
-            valid = valid && watts >= 145 && watts <= 180 && (watts % 5) == 0;
-        else if (profile == NvpwrProfileRtx5080Laptop || profile == NvpwrProfileRtx5090Laptop)
-            valid = valid && watts >= 175 && watts <= 225 && (watts % 5) == 0;
-        else if (profile == NvpwrProfileRtx4090Laptop)
-            valid = valid && watts >= 150 && watts <= 250 && (watts % 5) == 0;
-        else if (profile == NvpwrProfileRtx4080Laptop)
-            valid = valid && watts >= 150 && watts <= 225 && (watts % 5) == 0;
-        else if (profile == NvpwrProfileRtx4060Laptop || profile == NvpwrProfileRtx4070Laptop)
-            valid = valid && watts >= 120 && watts <= 150 && (watts % 5) == 0;
-        else if (profile == NvpwrProfileRtx4050Laptop)
-            valid = valid && watts >= 115 && watts <= 140 && (watts % 5) == 0;
+        if (valid) {
+            valid = targetMw >= range.Lo && targetMw <= range.Hi && (watts % 5) == 0;
+        }
         if (!valid) {
-            std::printf("4090: 150..250 W; 4080: 150..225 W; 4060/4070: 120..150 W; 4050: 115..140 W;\n"
-                        "5050/5060/5070: 120..140 W; 5070ti: 145..180 W; 5080/5090: 175..225 W. Step 5 W.\n");
+            std::printf("This profile accepts %lu..%lu W in 5 W steps.\n",
+                        range.Lo / 1000, range.Hi / 1000);
+            std::printf("The window comes from the driver%s, the same one the GUI offers.\n",
+                        range.FromDriver ? " (SupportedMin/SupportedMax)" : "; status was unreadable, using defaults");
             CloseHandle(h);
             return 2;
         }
+
         NVPWR_SET_POWER req{};
         req.Version = NVPWR_SET_VERSION;
-        req.TargetMilliwatts = (ULONG)watts * 1000u;
+        req.TargetMilliwatts = (ULONG)targetMw;
         req.Profile = profile;
+        /*
+            The session ceiling, which is what lets a target above the OEM rail through.
+            The driver clamps it to its own POWER_CEILING_DEV. Leaving it at zero means
+            "use the driver default", which also works; sending the reported ceiling keeps
+            this on exactly the path the GUI takes.
+        */
+        req.MaxMilliwatts = range.Ceiling;
+        req.Reserved = 0;
+
         DWORD got = 0;
         if (!DeviceIoControl(h, IOCTL_NVPWR_SET_POWER, &req, sizeof(req), nullptr, 0, &got, nullptr)) {
             std::printf("Set failed: Win32=%lu\n", GetLastError());

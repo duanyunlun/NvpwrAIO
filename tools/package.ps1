@@ -73,8 +73,14 @@ $components = @(
     @{ Path = "$efiBoot\EfiGuardDxe.efi"; Name = 'EfiGuardDxe.efi';Why = 'EfiGuard 驱动' },
     @{ Path = "$stage\Nvpwr.sys";         Name = 'Nvpwr.sys';      Why = '内核驱动' },
     @{ Path = "$stage\Nvpwr.cer";         Name = 'Nvpwr.cer';      Why = '驱动测试证书' },
-    @{ Path = "$stage\NvpwrCtl.exe";      Name = 'NvpwrCtl.exe';   Why = '命令行工具' },
-    @{ Path = "$stage\NvpwrSvc.exe";      Name = 'NvpwrSvc.exe';   Why = '后台服务' }
+    # NvpwrCtl 取本仓库刚构建出来的那份，不是部署目录里那份。
+    #
+    # 部署目录之所以是"非 GUI 组件的来源"，是因为 EfiDSEFix / bootx64 / Nvpwr.sys 这些
+    # 属于外部产物，本仓库只负责打包。但 NvpwrCtl 是本仓库自己构建的，混在一起取会让
+    # "改源码 → 重新打包" 静默地用上旧二进制 —— 打包报告成功，内容却没变。
+    @{ Path = (Join-Path $proj 'cli\x64\Release\NvpwrCtl.exe'); Name = 'NvpwrCtl.exe'; Why = '命令行工具（本仓库构建）' },
+    # 同理，服务也是本仓库构建的，取构建产物而不是部署目录里那份。
+    @{ Path = (Join-Path $proj 'service\x64\Release\NvpwrSvc.exe'); Name = 'NvpwrSvc.exe'; Why = '后台服务（本仓库构建）' }
 )
 foreach ($c in $components) {
     if (-not (Test-Path $c.Path)) { Fail "缺少 $($c.Name)（$($c.Why)）: $($c.Path)" }

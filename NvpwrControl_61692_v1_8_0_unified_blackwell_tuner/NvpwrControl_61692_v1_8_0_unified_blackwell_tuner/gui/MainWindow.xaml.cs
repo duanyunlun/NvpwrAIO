@@ -240,11 +240,6 @@ namespace NvpwrControl
 		/// </summary>
 		private int ReadPowerFloorW()
 		{
-			if (_state.PowerFloorW > 0)
-			{
-				return _state.PowerFloorW;
-			}
-
 			// Established once, and stamped with the boot it was read on. Every later call returns
 			// the record without touching it — a live reading cannot tell a factory wall from one
 			// this program raised, so the record is the only thing that can, and one that any
@@ -252,17 +247,55 @@ namespace NvpwrControl
 			DateTime boot = DateTime.Now - TimeSpan.FromMilliseconds(Environment.TickCount64);
 			long stamp = boot.Ticks;
 
-			if (Driver.QueryStatus(out var status, out var _) && status.OemBaseline != 0)
+			if (Driver.QueryStatus(out var status, out var _))
 			{
-				int fromDriver = (int)(status.OemBaseline / 1000);
-				if (fromDriver > 0)
+				/*
+					The record wins, with one exception: a different GPU profile means different
+					hardware or a different VBIOS, so the wall is a different number and the old
+					one is meaningless. Nothing else may rewrite it — not a live reading, not a
+					restart, not the ceiling having moved.
+
+					The service captures this first at boot, before it replays anything, which is
+					the only moment the answer is certain. This path exists for the case where the
+					service is not installed and the GUI is the only thing running.
+				*/
+				bool profileChanged = _state.PowerFloorProfile != 0 &&
+									  _state.PowerFloorProfile != status.ActiveProfile;
+				if (_state.PowerFloorW > 0 && !profileChanged)
 				{
-					_state.PowerFloorW = fromDriver;
-					_state.PowerFloorBoot = stamp;
-					Store.Log("出厂功耗墙已记录: " + fromDriver + " W（驱动 OemBaseline，建立于 " +
-							  boot.ToString("MM-dd HH:mm:ss") + "）");
-					SaveState();
-					return fromDriver;
+					return _state.PowerFloorW;
+				}
+				/*
+					Only record it while the wall is demonstrably untouched.
+
+					At a boot the display driver has just reset the wall, so it equals the
+					profile's minimum. A wall above that has been raised since the last reload —
+					which is the case when this runs mid-session, or after a deploy unloaded the
+					helper while the ceiling was up. Writing that number down would poison the
+					record permanently, and the record is exactly the thing that cannot be
+					corrected afterwards. Better to leave it empty and let the next boot fill it.
+				*/
+				bool wallLooksStock = status.SupportedMin == 0 || status.OemBaseline <= status.SupportedMin;
+				if (wallLooksStock && status.OemBaseline != 0)
+				{
+					int fromDriver = (int)(status.OemBaseline / 1000);
+					if (fromDriver > 0)
+					{
+						_state.PowerFloorW = fromDriver;
+						_state.PowerFloorProfile = status.ActiveProfile;
+						_state.PowerFloorBoot = stamp;
+						Store.Log((profileChanged ? "显卡型号变化，出厂功耗墙已重记: " : "出厂功耗墙已记录: ") +
+								  fromDriver + " W（驱动 OemBaseline，profile " + status.ActiveProfile +
+								  "，建立于 " + boot.ToString("MM-dd HH:mm:ss") + "）");
+						SaveState();
+						return fromDriver;
+					}
+				}
+				else if (status.OemBaseline != 0)
+				{
+					Store.Log("出厂功耗墙暂不记录: 当前墙 " + (status.OemBaseline / 1000) +
+							  " W 高于出厂值 " + (status.SupportedMin / 1000) +
+							  " W，重启后会自动记录");
 				}
 			}
 
@@ -1000,7 +1033,9 @@ private static string Fmt(double v, string unit)
 		{
 			int lo, hi;
 			PowerWindow(out lo, out hi);
-			_targetW = Math.Min(hi, _targetW + POWER_STEP_W);
+			// 两端都要夹。只夹上界的话，_targetW 一旦低于下限（比如恢复默认曾把它设成
+			// 0），点加号会从那个值开始一格格爬，中间每一步都停在可申请范围之外。
+			_targetW = Math.Min(hi, Math.Max(lo, _targetW + POWER_STEP_W));
 			PwHint.Text = "";
 			ShowPowerTarget();
 		}
@@ -1971,7 +2006,16 @@ private static string Fmt(double v, string unit)
 				_state.Voltage.BaselineMinMv = 0;
 				_state.Voltage.BaselineMaxMv = 0;
 
-				_targetW = 0;
+				/*
+					功耗回到出厂上限，不是 0。
+
+					这里原来写的是 0，于是「恢复默认」之后功耗框显示 0，点加号从 0 开始
+					一格格往上爬，要爬七次才够到 175。0 既不是当前生效值（驱动此时已经
+					回到出厂功耗墙），也不是任何可申请的值 —— 它只是没有意义。
+
+					恢复默认的含义就是回到出厂功耗墙，那就是 _powerFloorW。
+				*/
+				_targetW = _powerFloorW;
 				_voltOffsetMv = 0;
 				SaveState();
 				PushStateToControls();

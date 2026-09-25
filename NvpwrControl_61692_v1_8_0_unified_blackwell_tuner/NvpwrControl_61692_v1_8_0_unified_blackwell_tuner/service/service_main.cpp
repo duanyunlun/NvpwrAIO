@@ -327,6 +327,92 @@ static bool SendRestore(std::wstring& error) {
     return ok != FALSE;
 }
 
+/* Reads OEM baseline, the active profile and the profile's minimum out of the driver. */
+static bool QueryDriverBaseline(unsigned int& oemBaselineMw, unsigned int& profile,
+                                unsigned int& supportedMinMw, std::wstring& error) {
+    HANDLE dev = CreateFileW(NVPWR_DEVICE_WIN32, GENERIC_READ | GENERIC_WRITE,
+                             0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (dev == INVALID_HANDLE_VALUE) {
+        error = L"device not open";
+        return false;
+    }
+    NVPWR_STATUS st{};
+    DWORD got = 0;
+    BOOL ok = DeviceIoControl(dev, IOCTL_NVPWR_STATUS, nullptr, 0, &st, sizeof(st), &got, nullptr);
+    CloseHandle(dev);
+    if (!ok || got < sizeof(st)) {
+        error = L"STATUS failed (error " + std::to_wstring(GetLastError()) + L")";
+        return false;
+    }
+    oemBaselineMw = st.OemBaseline;
+    profile = st.ActiveProfile;
+    supportedMinMw = st.SupportedMin;
+    return true;
+}
+
+/*
+    Records the factory power wall, once.
+
+    This runs before the first replay, which is the only moment the answer is still
+    certain: nothing this program does has touched the wall yet, so the driver's
+    OemBaseline is genuinely the value the card shipped with. After a replay it is
+    not — the driver captures whatever the ceiling was when it first mutated it, so
+    a service that starts on an already-raised wall records the raised value.
+
+    It is written once and then left alone. The single exception is a different GPU
+    profile, which means different hardware or a different VBIOS and therefore a
+    different factory wall; nothing else may rewrite it.
+
+    THE STOCK CHECK. At a boot the wall has just been reset by the display driver and
+    equals the profile's minimum. If it does not, the wall has been raised since the
+    last reload — the case that arises when this runs mid-session rather than at boot,
+    or when a deploy unloaded the helper while the ceiling was up. Writing that number
+    down would poison the record permanently, and the record is precisely the thing
+    that cannot be corrected later. So a wall above the minimum is treated as "not
+    now" and the field is left empty for the next real boot to fill in.
+
+    Failing here is not fatal. The replay still runs, and the record is simply still
+    absent, which the GUI also handles.
+*/
+static void CapturePowerFloorIfAbsent() {
+    DesiredState st{};
+    std::wstring err;
+    if (!nvpwr::LoadDesiredState(st, err)) {
+        SvcLog(L"power floor: state unreadable: " + err);
+        return;
+    }
+
+    unsigned int baselineMw = 0, profile = 0, supportedMinMw = 0;
+    if (!QueryDriverBaseline(baselineMw, profile, supportedMinMw, err)) {
+        SvcLog(L"power floor: " + err);
+        return;
+    }
+    if (baselineMw == 0) {
+        SvcLog(L"power floor: driver reports no baseline yet");
+        return;
+    }
+
+    const unsigned int floorW = baselineMw / 1000u;
+    if (st.powerFloorW == floorW && st.powerFloorProfile == profile) return;
+
+    if (supportedMinMw != 0 && baselineMw > supportedMinMw) {
+        SvcLog(L"power floor: not captured, wall is above stock (" + std::to_wstring(floorW) +
+               L" W > " + std::to_wstring(supportedMinMw / 1000u) +
+               L" W) — a reboot will reset it and this will record then");
+        return;
+    }
+
+    const bool firstTime = (st.powerFloorW == 0);
+    st.powerFloorW = floorW;
+    st.powerFloorProfile = profile;
+    if (!nvpwr::SaveDesiredState(st, err)) {
+        SvcLog(L"power floor: could not save: " + err);
+        return;
+    }
+    SvcLog((firstTime ? L"power floor recorded: " : L"power floor re-recorded for a new profile: ") +
+           std::to_wstring(floorW) + L" W (profile " + std::to_wstring(profile) + L")");
+}
+
 /* ------------------------------------------------------------------ */
 /* state replay                                                       */
 /* ------------------------------------------------------------------ */
@@ -595,6 +681,16 @@ static bool WriteResponse(HANDLE pipe, const std::wstring& response) {
 
 static DWORD WINAPI ServiceThread(LPVOID) {
     SetServiceState(SERVICE_RUNNING);
+
+    /*
+        Record the factory wall BEFORE the first replay.
+
+        This is the whole reason the service carries the record: at this instant the
+        wall is still whatever the card shipped with, so the driver's OemBaseline is
+        the truth. One line later the replay may raise it, and from then on no live
+        reading can tell the two apart.
+    */
+    CapturePowerFloorIfAbsent();
 
     /* First replay: retry for a while because the display stack is usually not
        ready immediately after boot. */
