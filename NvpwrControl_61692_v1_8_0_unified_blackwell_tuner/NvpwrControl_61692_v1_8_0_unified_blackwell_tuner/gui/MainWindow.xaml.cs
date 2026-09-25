@@ -184,34 +184,44 @@ namespace NvpwrControl
 		/// <summary>
 		/// The factory power wall, in watts.
 		///
+		/// The record is written once and never overwritten. Everything reads from it after that.
+		///
 		/// Order matters here, and the reason is that the value cannot be re-read once it has
 		/// been changed: anything read live afterwards is the number this program wrote.
 		///
-		///   1. A loaded, unmodified driver reports OemBaseline. Authoritative, and recorded.
-		///   2. A recorded value beats any live reading, because the live reading may be ours.
-		///   3. Only with nothing on record does the NVML fallback run, capturing whatever it
-		///      finds. That is a first launch after a reboot, where the wall is still factory.
+		///   1. A value already on record wins outright. It was captured after a reboot, when the
+		///      wall is factory by construction, and nothing read later can be better evidence
+		///      than that — a live reading may be this program's own doing, or a helper's wrong
+		///      guess at its own baseline.
+		///   2. Only with nothing on record does a loaded driver's OemBaseline establish it.
+		///   3. Failing that, the NVML reading does, on a first launch after a reboot.
 		///
-		/// The previous version kept no record and went straight to the NVML reading, so after
-		/// raising the ceiling to 200 W it reported 200 W as the factory wall.
+		/// Step 2 used to run first and write through on every call, which was quietly fatal. A
+		/// helper loaded while the wall had already moved reports the moved value as its baseline,
+		/// so that write replaced the correct record with the raised one — after which the
+		/// mismatch check in the apply path compared the helper against itself and found nothing
+		/// wrong, and the machine was stuck believing its factory wall was 250 W.
+		///
+		/// The previous version before that kept no record at all and went straight to the NVML
+		/// reading, so after raising the ceiling to 200 W it reported 200 W as the factory wall.
 		/// </summary>
 		private int ReadPowerFloorW()
 		{
-			if (Driver.QueryStatus(out var status, out var _) && status.OemBaseline != 0)
-			{
-				int fromDriver = (int)(status.OemBaseline / 1000);
-				if (fromDriver > 0 && _state.PowerFloorW != fromDriver)
-				{
-					_state.PowerFloorW = fromDriver;
-					Store.Log("出厂功耗墙已记录: " + fromDriver + " W（驱动 OemBaseline）");
-					SaveState();
-				}
-				return fromDriver;
-			}
-
 			if (_state.PowerFloorW > 0)
 			{
 				return _state.PowerFloorW;
+			}
+
+			if (Driver.QueryStatus(out var status, out var _) && status.OemBaseline != 0)
+			{
+				int fromDriver = (int)(status.OemBaseline / 1000);
+				if (fromDriver > 0)
+				{
+					_state.PowerFloorW = fromDriver;
+					Store.Log("出厂功耗墙已记录: " + fromDriver + " W（驱动 OemBaseline，首次建立）");
+					SaveState();
+					return fromDriver;
+				}
 			}
 
 			EnvSample envSample = Telemetry.Sample();
@@ -219,7 +229,7 @@ namespace NvpwrControl
 			{
 				int captured = (int)Math.Round(envSample.EnforcedLimitW);
 				_state.PowerFloorW = captured;
-				Store.Log("出厂功耗墙已记录: " + captured + " W（NVML，首次运行）");
+				Store.Log("出厂功耗墙已记录: " + captured + " W（NVML，首次建立）");
 				SaveState();
 				return captured;
 			}
