@@ -1471,6 +1471,10 @@ private static string Fmt(double v, string unit)
 		/// Content carries the action and the caption carries the state, the same split the
 		/// prerequisite chips use: reading "解除锁定" tells you what pressing it does, and
 		/// "已锁定" tells you where you are, without either having to say both.
+		///
+		/// The locked state also fills the button amber. It is the one control on this card that
+		/// changes the GPU's behaviour the moment it is pressed, with no 应用 step to confirm it,
+		/// so it has to be obvious at a glance whether it is on.
 		/// </summary>
 		private void UpdateBoostLockButton()
 		{
@@ -1479,9 +1483,13 @@ private static string Fmt(double v, string unit)
 				return;
 			}
 			BoostLockButton.Content = _boostLocked ? "解除锁定" : "锁定超频";
+			BoostLockButton.SetResourceReference(Control.BackgroundProperty,
+				_boostLocked ? "Warn" : "FieldBg");
+			BoostLockButton.SetResourceReference(Control.ForegroundProperty,
+				_boostLocked ? "Rail" : "TextMain");
 			if (BoostLockState != null)
 			{
-				BoostLockState.Text = _boostLocked ? "已锁定" : "未锁定";
+				BoostLockState.Text = _boostLocked ? "已锁定加速频率" : "未锁定";
 				BoostLockState.SetResourceReference(TextBlock.ForegroundProperty,
 					_boostLocked ? "Warn" : "TextMuted");
 			}

@@ -494,17 +494,22 @@
                                     Padding="9,7" Margin="0" Click="OnApplyClocks"/>
                         </StackPanel>
 
-                        <!-- BoostLock 是 mVolt+ 的开关，不属于频率也不属于电压：它把加速频率
-                             锁住，让 GPU 不再按负载动态冲高频。放在频率这一段的末尾，因为它
-                             影响的正是核心频率的行为。 -->
-                        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
-                            <Button x:Name="BoostLockButton" Content="锁定超频"
-                                    Style="{StaticResource Btn}" Padding="10,7" Margin="0"
-                                    Click="OnToggleBoostLock"/>
-                            <TextBlock x:Name="BoostLockState" Style="{StaticResource Caption}"
-                                       VerticalAlignment="Center" Margin="9,0,0,0"
-                                       Foreground="{StaticResource TextMuted}" Text="—"/>
-                        </StackPanel>
+                        <!-- BoostLock 独占卡片底部，和上面的调整控件隔开。
+
+                             它不是"改一个数值再应用"，而是一个开关：按一下当场改变 GPU 的
+                             加速行为，没有「应用」这一步。所以它不该挤在 重置/应用 旁边 ——
+                             伸手去点「应用」时很容易误触。隔一条分割线、做满宽度、字大一号，
+                             既不容易点错，也一眼能看出这张卡还有一个总开关。 -->
+                        <Border Height="1" Background="{StaticResource CardBorder}" Margin="0,18,0,0"/>
+
+                        <Button x:Name="BoostLockButton" Content="锁定超频"
+                                Style="{StaticResource Btn}"
+                                FontSize="15" FontWeight="SemiBold" Padding="0,17"
+                                HorizontalAlignment="Stretch" Margin="0,16,0,0"
+                                Click="OnToggleBoostLock"/>
+                        <TextBlock x:Name="BoostLockState" Style="{StaticResource Caption}"
+                                   HorizontalAlignment="Center" Margin="0,8,0,0"
+                                   Foreground="{StaticResource TextMuted}" Text="—"/>
 
                     </StackPanel>
 
