@@ -97,33 +97,6 @@ namespace NvpwrControl
             }
         }
 
-        /// <summary>
-        /// True when the background service is registered, whatever state it happens to be in.
-        ///
-        /// Asked on exit, to decide whether the kernel helper belongs to the service or to this
-        /// session. Touching Status is what throws when nothing is registered, so that is what
-        /// this does rather than parsing Query()'s display string.
-        /// </summary>
-        public static bool IsInstalled()
-        {
-            try
-            {
-                using (ServiceController sc = new ServiceController(Name))
-                {
-                    ServiceControllerStatus ignored = sc.Status;
-                    return true;
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                return false;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
         private static string ServiceExePath()
         {
             string dir = Path.GetDirectoryName(ExePath);

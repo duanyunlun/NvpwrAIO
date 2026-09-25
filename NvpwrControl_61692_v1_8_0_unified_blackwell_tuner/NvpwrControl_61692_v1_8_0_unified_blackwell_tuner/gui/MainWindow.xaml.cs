@@ -457,32 +457,28 @@ namespace NvpwrControl
 			}
 
 			/*
-				The helper is unloaded only when nothing else is holding it.
+				The helper goes when the window does. This is the point of the whole arrangement.
 
-				With the service installed, the helper belongs to the service: it loads it at boot,
-				while the ceiling is still at the factory value, and keeps it there. Unloading it on
-				exit takes that away and costs the next session a display device restart, because a
-				helper only loads against a factory baseline and the rail is no longer at one.
+				A test-signed driver sitting in the kernel is exactly what a kernel anti-cheat looks
+				for, and the ceiling does not depend on it staying: the value lives in NVIDIA's own
+				state, so unloading costs nothing and leaves nothing behind. DSE is already back on
+				by this point — it is restored the moment the driver service reports RUNNING, not
+				held off for the session — so the only kernel artifact this program leaves is none.
 
-				That restart is the step that crashed — see the note in GpuDevice.Restart — and it is
-				avoidable whenever the service is present. Without the service the driver is this
-				session's to load and unload, and the restart is the price of a second change.
+				It briefly looked cheaper to keep it loaded whenever the service was installed,
+				because the helper only loads against a factory baseline and so a second session
+				would otherwise need a display device restart. That was the wrong trade: it leaves a
+				driver in the kernel for as long as the machine is up, to save a few seconds of black
+				screen. The restart is safe now — the NVML poll that crashed inside it is gone — so it
+				is the restart that is paid.
 
-				Leaving it resident costs nothing: the value lives in NVIDIA's own state rather than
-				ours, and DSE is already back on by this point — it is restored the moment the driver
-				service reports RUNNING, not held off for the session.
+				Whoever wants both cleanly uses 标准模式, which also restores the factory settings
+				and removes the service, and boots without EfiGuard.
 			*/
 			if (Driver.IsOpenable())
 			{
-				if (Service.IsInstalled())
-				{
-					Store.Log("内核驱动由后台服务持有，退出时保留");
-				}
-				else
-				{
-					UnlockChain.Unload();
-					Store.Log("已卸载内核驱动，功耗设置保持到重启");
-				}
+				UnlockChain.Unload();
+				Store.Log("已卸载内核驱动，功耗设置保持到重启");
 			}
 
 			Store.Log("NvpwrControl 退出");
