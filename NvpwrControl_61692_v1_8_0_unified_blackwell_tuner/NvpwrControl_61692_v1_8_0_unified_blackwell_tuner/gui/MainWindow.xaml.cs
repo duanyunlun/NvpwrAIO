@@ -212,13 +212,22 @@ namespace NvpwrControl
 				return _state.PowerFloorW;
 			}
 
+			// Established once, and stamped with the boot it was read on. Every later call returns
+			// the record without touching it — a live reading cannot tell a factory wall from one
+			// this program raised, so the record is the only thing that can, and one that any
+			// later reading may overwrite is not a record.
+			DateTime boot = DateTime.Now - TimeSpan.FromMilliseconds(Environment.TickCount64);
+			long stamp = boot.Ticks;
+
 			if (Driver.QueryStatus(out var status, out var _) && status.OemBaseline != 0)
 			{
 				int fromDriver = (int)(status.OemBaseline / 1000);
 				if (fromDriver > 0)
 				{
 					_state.PowerFloorW = fromDriver;
-					Store.Log("出厂功耗墙已记录: " + fromDriver + " W（驱动 OemBaseline，首次建立）");
+					_state.PowerFloorBoot = stamp;
+					Store.Log("出厂功耗墙已记录: " + fromDriver + " W（驱动 OemBaseline，建立于 " +
+							  boot.ToString("MM-dd HH:mm:ss") + "）");
 					SaveState();
 					return fromDriver;
 				}
@@ -229,7 +238,9 @@ namespace NvpwrControl
 			{
 				int captured = (int)Math.Round(envSample.EnforcedLimitW);
 				_state.PowerFloorW = captured;
-				Store.Log("出厂功耗墙已记录: " + captured + " W（NVML，首次建立）");
+				_state.PowerFloorBoot = stamp;
+				Store.Log("出厂功耗墙已记录: " + captured + " W（NVML，建立于 " +
+						  boot.ToString("MM-dd HH:mm:ss") + "）");
 				SaveState();
 				return captured;
 			}

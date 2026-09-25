@@ -84,8 +84,23 @@ namespace NvpwrControl
         /// The driver OemBaseline is authoritative while it is loaded and untouched, so that is
         /// what gets recorded. The boot service runs before anything has been applied, which is
         /// the one moment a live reading is guaranteed to be the factory value.
+        ///
+        /// Written once and never rewritten. A live reading cannot tell a factory wall from one
+        /// this program raised, so the record is the only thing that can — and a record that any
+        /// later reading may overwrite is not a record at all. The one measured failure: a helper
+        /// loaded after the ceiling had moved reports the moved value as its baseline, and the
+        /// write-through that used to be here replaced the correct 175 with 250.
         /// </summary>
         public int PowerFloorW;
+
+        /// <summary>
+        /// The system boot time at which PowerFloorW was recorded, as ticks.
+        ///
+        /// Audit only — nothing branches on it. It answers "when was this captured", which is the
+        /// first question when a factory wall looks wrong, and it distinguishes a record made on
+        /// a boot where the wall was still factory from one made later.
+        /// </summary>
+        public long PowerFloorBoot;
         public VoltageTuning Voltage = new VoltageTuning();
         public ClockTuning Clock = new ClockTuning();
         public string MvoltPath = "";
@@ -224,6 +239,7 @@ namespace NvpwrControl
             b.AppendLine(p + "power_ceiling_mw=" + s.CeilingMw);
             b.AppendLine(p + "power_profile=" + s.Profile);
             b.AppendLine(p + "power_floor_w=" + s.PowerFloorW);
+            b.AppendLine(p + "power_floor_boot=" + s.PowerFloorBoot);
             b.AppendLine(p + "voltage_enabled=" + (s.Voltage.Enabled ? 1 : 0));
             b.AppendLine(p + "voltage_applier=1");   // 1 = companion tool
             b.AppendLine(p + "nvvdd_vmin_uv=" + s.Voltage.Nvvdd.VminUv);
@@ -292,6 +308,7 @@ namespace NvpwrControl
             s.CeilingMw = ceiling == 0 ? Driver.DefaultCeilingMw : ceiling;
             s.Profile = (uint)num("power_profile");
             s.PowerFloorW = (int)num("power_floor_w");
+            s.PowerFloorBoot = num("power_floor_boot");
 
             s.Voltage.Enabled = num("voltage_enabled") != 0;
             s.Voltage.Nvvdd.VminUv = num("nvvdd_vmin_uv");
