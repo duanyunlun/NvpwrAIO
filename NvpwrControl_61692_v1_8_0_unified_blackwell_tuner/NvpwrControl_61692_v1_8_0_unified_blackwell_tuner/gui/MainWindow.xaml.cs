@@ -457,28 +457,29 @@ namespace NvpwrControl
 			}
 
 			/*
-				The helper goes when the window does. This is the point of the whole arrangement.
+				The helper stays loaded when the window closes. That is what the reference does, and
+				it is what makes the rest of the design work.
 
-				A test-signed driver sitting in the kernel is exactly what a kernel anti-cheat looks
-				for, and the ceiling does not depend on it staying: the value lives in NVIDIA's own
-				state, so unloading costs nothing and leaves nothing behind. DSE is already back on
-				by this point — it is restored the moment the driver service reports RUNNING, not
-				held off for the session — so the only kernel artifact this program leaves is none.
+				The helper only loads against a factory baseline — it reads the ceiling at load time
+				and treats it as the OEM value — so a session that unloads it cannot load it again
+				once the ceiling has moved. Reloading then means a display device restart to put the
+				ceiling back, which is a few seconds of black screen every time the window is closed
+				and reopened. Inspecting the reference binary settles it: it has no unload-on-exit
+				path at all. Its only teardown is a user-pressed "Restart Nvpwr driver", and that is
+				the one that carries the "restoring OEM before unload" gate.
 
-				It briefly looked cheaper to keep it loaded whenever the service was installed,
-				because the helper only loads against a factory baseline and so a second session
-				would otherwise need a display device restart. That was the wrong trade: it leaves a
-				driver in the kernel for as long as the machine is up, to save a few seconds of black
-				screen. The restart is safe now — the NVML poll that crashed inside it is gone — so it
-				is the restart that is paid.
+				The anti-cheat answer is DSE, not the driver, and that part is already tighter here
+				than in the reference: this program disables DSE only for the instant the driver
+				loads and restores it in a finally block, rather than holding it off for the whole
+				session. Nothing is written to BCD and test signing is never enabled — the reference
+				requires TESTSIGNING ON, which is far more visible than anything left here.
 
-				Whoever wants both cleanly uses 标准模式, which also restores the factory settings
-				and removes the service, and boots without EfiGuard.
+				Anyone who wants the kernel clean as well uses 标准模式, which restores the factory
+				settings and removes the service, and boots without EfiGuard.
 			*/
 			if (Driver.IsOpenable())
 			{
-				UnlockChain.Unload();
-				Store.Log("已卸载内核驱动，功耗设置保持到重启");
+				Store.Log("内核驱动保持加载（功耗值在 NVIDIA 驱动内，退出不影响；DSE 已恢复）");
 			}
 
 			Store.Log("NvpwrControl 退出");
@@ -997,6 +998,43 @@ private static string Fmt(double v, string unit)
 			try
 			{
 				bool deviceRestarted = false;
+
+				/*
+					A loaded helper is not necessarily a usable one.
+
+					The helper reads the ceiling at load time and takes it for the OEM value. Loaded
+					while the ceiling had already moved, the baseline it records is wrong — measured
+					both ways: it came back as 0 in one run and as the moved value, 250000, in
+					another. Either way the arithmetic is done against a baseline that is not the
+					factory one, and a set for anything below it is refused with error 87. That is
+					not hypothetical: the background service does this whenever it comes up while
+					the rail is off factory, which is what a stopped-and-restarted service looks
+					like.
+
+					So the test is not "is the driver open" but "does the baseline it reports match
+					the factory value on record". That record lives in state.ini and is preferred
+					over anything read live, precisely so it survives this. A mismatch means the
+					helper is dropped here and the load below goes through EnsureLoaded, which puts
+					the rail back to that factory value first.
+				*/
+				if (Driver.IsOpenable())
+				{
+					Driver.Status loaded;
+					string probe;
+					if (Driver.QueryStatus(out loaded, out probe))
+					{
+						bool noBaseline = loaded.OemBaseline == 0;
+						bool wrongBaseline = _state.PowerFloorW > 0 &&
+											 loaded.OemBaseline / 1000 != (uint)_state.PowerFloorW;
+						if (noBaseline || wrongBaseline)
+						{
+							Store.Log("驱动已加载但基线不可信（报告 " + loaded.OemBaseline / 1000 +
+									  " W，应为 " + _state.PowerFloorW + " W），卸载后重新走加载流程");
+							UnlockChain.Unload();
+						}
+					}
+				}
+
 				if (!Driver.IsOpenable() &&
 					!UnlockChain.EnsureLoaded(_powerFloorW, out deviceRestarted, out error))
 				{
