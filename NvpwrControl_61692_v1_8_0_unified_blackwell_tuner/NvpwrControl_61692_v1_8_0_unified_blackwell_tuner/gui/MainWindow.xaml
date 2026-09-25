@@ -494,6 +494,18 @@
                                     Padding="9,7" Margin="0" Click="OnApplyClocks"/>
                         </StackPanel>
 
+                        <!-- BoostLock 是 mVolt+ 的开关，不属于频率也不属于电压：它把加速频率
+                             锁住，让 GPU 不再按负载动态冲高频。放在频率这一段的末尾，因为它
+                             影响的正是核心频率的行为。 -->
+                        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                            <Button x:Name="BoostLockButton" Content="锁定超频"
+                                    Style="{StaticResource Btn}" Padding="10,7" Margin="0"
+                                    Click="OnToggleBoostLock"/>
+                            <TextBlock x:Name="BoostLockState" Style="{StaticResource Caption}"
+                                       VerticalAlignment="Center" Margin="9,0,0,0"
+                                       Foreground="{StaticResource TextMuted}" Text="—"/>
+                        </StackPanel>
+
                     </StackPanel>
 
                 </Grid>
@@ -570,49 +582,8 @@
                                 TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
                                 ValueChanged="OnMaxVoltSliderChanged"/>
 
-                        <!-- The arithmetic for the two limits, directly under the two sliders it
-                             describes. At the bottom of the card it looked like a summary of every
-                             control, but the demand offsets below are independent of the limits and
-                             do not feed into this. -->
-                        <Border Background="{StaticResource NoteBg}" BorderBrush="{StaticResource CardBorder}"
-                                BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,10,0,0">
-                            <StackPanel>
-                                <TextBlock x:Name="MinFormulaLabel" Style="{StaticResource CardNote}"
-                                           Foreground="{StaticResource TextMain}" Text="下限 —"/>
-                                <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
-                                    <TextBlock x:Name="MaxFormulaLabel" Style="{StaticResource CardNote}"
-                                               Foreground="{StaticResource TextMain}" Text="上限 —"/>
-                                    <TextBlock x:Name="OvParenthetical" Style="{StaticResource CardNote}"
-                                               Margin="8,0,0,0" Text="(OV —)"/>
-                                </StackPanel>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- OV is its own control, the way the companion tool has it. It is the
-                             only offset that can pull the effective maximum *down*: REL does not
-                             accept negative values on this rail. The label states whether the
-                             ceiling is currently binding, because most of its travel does nothing.
-                             -->
-                        <TextBlock Style="{StaticResource RowLabel}" Margin="0,10,0,0" TextTrimming="CharacterEllipsis"
-                                   Text="过压上限偏移 · 降低上限只能靠它" ToolTip="给电压策略加一条独立的过压上限：OV 限值 = 1200 + 本偏移。&#10;生效上限 = min(最高电压, OV 限值)，所以只有 OV 限值降到最高电压以下时才起作用。&#10;实测：OV -175 刚好不生效，-176 起开始把上限压下来。&#10;本偏移不能低到让 OV 限值低于「最低电压」，否则会被拒绝。"/>
-                        <Slider x:Name="OvSlider" Minimum="-755" Maximum="80" Value="0"
-                                TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
-                                ValueChanged="OnOvSliderChanged"/>
-                        <Grid Margin="0,2,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" x:Name="OvLabel" Style="{StaticResource Caption}"
-                                       Foreground="{StaticResource TextMuted}" Text="待下发 0 mV"/>
-                            <TextBlock Grid.Column="1" x:Name="OvAllowedLabel" Style="{StaticResource Caption}"
-                                       Text="允许 -755–+80 mV"/>
-                        </Grid>
-                        <TextBlock Text="以下两项与上下限相互独立" Style="{StaticResource Caption}"
-                                   Foreground="{StaticResource TextDim}" Margin="0,12,0,0"/>
-
                         <!-- Demand offsets: these request a voltage rather than bounding one. -->
-                        <TextBlock Style="{StaticResource RowLabel}" Margin="0,14,0,0" TextTrimming="CharacterEllipsis"
+                        <TextBlock Style="{StaticResource RowLabel}" Margin="0,12,0,0" TextTrimming="CharacterEllipsis"
                                    Text="核心电压偏移 · 直接调请求电压" ToolTip="直接要求核心使用多少电压，与上面的上下限相互独立。&#10;这是 mVolt+ 默认开启的那一项，范围 -25…+50 mV。&#10;上下限是“允许到哪”，这一项是“我要多少”。"/>
                         <Slider x:Name="VoltSlider" Minimum="-25" Maximum="50" Value="0"
                                 TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
@@ -628,8 +599,50 @@
                                        Text="允许 -25–50 mV"/>
                         </Grid>
 
+                        <!-- MSVDD 是和 NVVDD 并列的另一条供电轨：NVVDD 供核心本体，MSVDD 供
+                             交叉开关（XBAR）、L2 和内存接口那部分。两者有各自的电压和功率遥测，
+                             所以这里给它和上面 NVVDD 同样的两个限值滑块。
+
+                             XBAR 时钟就跑在 MSVDD 这个域上（驱动里 ClockDomains 条目的
+                             +0x114 是 XBAR 频率、+0x11C 是 MSVDD 电压请求，同一个域描述符），
+                             所以调 MSVDD 的限值会直接影响 XBAR 能跑多高，下面的 XBAR 电压
+                             请求滑块是同一个域的另一条路径。 -->
+                        <Border Height="1" Background="{StaticResource CardBorder}" Margin="0,16,0,0"/>
+
+                        <TextBlock Style="{StaticResource RowLabel}" Margin="0,12,0,0" TextTrimming="CharacterEllipsis"
+                                   Text="MSVDD 最低电压 · VMIN 偏移" ToolTip="MSVDD 轨的最低工作电压，对应驱动的 VMIN 偏移。&#10;MSVDD 给交叉开关（XBAR）、L2 和内存接口供电，和供核心的 NVVDD 是两条独立的轨。&#10;器件允许区间 445–1280 mV。"/>
+                        <Slider x:Name="MsvddMinSlider" Minimum="445" Maximum="1025" Value="655"
+                                TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
+                                ValueChanged="OnMsvddMinChanged"/>
+                        <Grid Margin="0,2,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" x:Name="MsvddMinLabel" Style="{StaticResource BigSub}"
+                                       Foreground="{StaticResource Info}" FontWeight="SemiBold" Text="— mV"/>
+                            <TextBlock Grid.Column="1" x:Name="MsvddMinAllowedLabel" Style="{StaticResource Caption}"
+                                       Text="允许 445–1280 mV"/>
+                        </Grid>
+
                         <TextBlock Style="{StaticResource RowLabel}" Margin="0,10,0,0" TextTrimming="CharacterEllipsis"
-                                   Text="XBAR 电压偏移 · 核心-显存的交换网络" ToolTip="XBAR 是 GPU 内部把核心和显存连起来的交换网络，进出显存的数据都经过它。&#10;这一项给这块网络请求更多或更少的电压：升压让更高的 XBAR 频率更稳，降压可在原频率下省电。&#10;它可能与其它模块共用供电，实际电压不一定完全跟随请求。范围 -25…+50 mV。"/>
+                                   Text="MSVDD 最高电压 · REL/ALT 偏移" ToolTip="MSVDD 轨的最高工作电压，对应驱动的 REL 与 ALT/OP 偏移。&#10;压低它可以让交叉开关和内存接口在更低电压下工作；拉高它有助于更高的 XBAR 频率稳定。&#10;器件允许区间 445–1280 mV。"/>
+                        <Slider x:Name="MsvddMaxSlider" Minimum="445" Maximum="1150" Value="1025"
+                                TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
+                                ValueChanged="OnMsvddMaxChanged"/>
+                        <Grid Margin="0,2,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" x:Name="MsvddMaxLabel" Style="{StaticResource BigSub}"
+                                       Foreground="{StaticResource Info}" FontWeight="SemiBold" Text="— mV"/>
+                            <TextBlock Grid.Column="1" x:Name="MsvddMaxAllowedLabel" Style="{StaticResource Caption}"
+                                       Text="允许 445–1280 mV"/>
+                        </Grid>
+
+                        <TextBlock Style="{StaticResource RowLabel}" Margin="0,10,0,0" TextTrimming="CharacterEllipsis"
+                                   Text="XBAR 电压偏移 · 核心-显存的交换网络" ToolTip="XBAR 是 GPU 内部把核心和显存连起来的交换网络，进出显存的数据都经过它，它跑在 MSVDD 供电的域上。&#10;这一项给这块网络请求更多或更少的电压：升压让更高的 XBAR 频率更稳，降压可在原频率下省电。&#10;它可能与其它模块共用供电，实际电压不一定完全跟随请求。范围 -25…+50 mV。"/>
                         <Slider x:Name="XbarSlider" Minimum="-25" Maximum="50" Value="0"
                                 TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
                                 ValueChanged="OnXbarSliderChanged"/>

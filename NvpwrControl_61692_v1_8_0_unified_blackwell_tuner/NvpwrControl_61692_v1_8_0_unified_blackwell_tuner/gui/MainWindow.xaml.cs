@@ -112,6 +112,35 @@ namespace NvpwrControl
 
 		private int _appliedMaxMv = 1025;
 
+		/*
+			MSVDD —— 和 NVVDD 并列的另一条供电轨。
+
+			NVVDD 供 GPU 核心本体，MSVDD 供交叉开关（XBAR）、L2 和内存接口那部分。两者有各自
+			的电压和功率遥测，所以界面上给它们各一组限值滑块，互不影响。
+
+			XBAR 时钟就跑在 MSVDD 这个域上：驱动里 ClockDomains 条目的 +0x114 是 XBAR 频率、
+			+0x11C 是 MSVDD 电压请求，字段挨在一起、属于同一个域描述符。所以调 MSVDD 的限值
+			会直接影响 XBAR 能跑多高。
+		*/
+		private int _msvddVminOffsetMv;
+
+		private int _msvddRelOffsetMv;
+
+		private int _msvddAltOffsetMv;
+
+		private int _msvddOvOffsetMv;
+
+		private int _msvddBaseMinMv = 655;
+
+		private int _msvddBaseMaxMv = 1025;
+
+		private int _appliedMsvddMinMv = 655;
+
+		private int _appliedMsvddMaxMv = 1025;
+
+		/// <summary>BoostLock 的当前状态，来自 mVolt+ 的 boost_lock 字段。</summary>
+		private bool _boostLocked;
+
 		private SettingsDialog _settingsDialog;
 
 		private SlotsDialog _slotsDialog;
@@ -162,6 +191,10 @@ namespace NvpwrControl
 			_relOffsetMv = (int)(_state.Voltage.Nvvdd.RelUv / 1000);
 			_altOffsetMv = (int)(_state.Voltage.Nvvdd.AltUv / 1000);
 			_ovOffsetMv = (int)(_state.Voltage.Nvvdd.OvUv / 1000);
+			_msvddVminOffsetMv = (int)(_state.Voltage.Msvdd.VminUv / 1000);
+			_msvddRelOffsetMv = (int)(_state.Voltage.Msvdd.RelUv / 1000);
+			_msvddAltOffsetMv = (int)(_state.Voltage.Msvdd.AltUv / 1000);
+			_msvddOvOffsetMv = (int)(_state.Voltage.Msvdd.OvUv / 1000);
 
 			// The title bar stays Windows', but is told to draw itself dark. Repainting the
 			// caption by hand would mean reimplementing the buttons, snapping and resize borders;
@@ -699,14 +732,18 @@ namespace NvpwrControl
 			_mvoltReady = !string.IsNullOrEmpty(_mvoltPath) && File.Exists(_mvoltPath);
 			VoltSlider.IsEnabled = _mvoltReady;
 			XbarSlider.IsEnabled = _mvoltReady;
-			OvSlider.IsEnabled = _mvoltReady;
 			MinVoltSlider.IsEnabled = _mvoltReady;
 			MaxVoltSlider.IsEnabled = _mvoltReady;
+			MsvddMinSlider.IsEnabled = _mvoltReady;
+			MsvddMaxSlider.IsEnabled = _mvoltReady;
 			MVoltSnapshot mVoltSnapshot = MVolt.QueryStatus(_state.MvoltPath);
 			if (!mVoltSnapshot.Ok || mVoltSnapshot.NvvddLimitMaxMv <= 0)
 			{
 				return;
 			}
+			// BoostLock 的状态由 mVolt+ 持有，每次状态刷新跟着走。
+			_boostLocked = mVoltSnapshot.BoostLocked;
+			UpdateBoostLockButton();
 			/*
 				The factory limits: recorded once, then never overwritten.
 
@@ -744,6 +781,22 @@ namespace NvpwrControl
 			}
 			_appliedMinMv = (int)mVoltSnapshot.NvvddLimitMinMv;
 			_appliedMaxMv = (int)mVoltSnapshot.NvvddLimitMaxMv;
+
+			// MSVDD 的基线与器件范围。和 NVVDD 一样，基线取"上报限值 − 该轨偏移"，
+			// 也就是把偏移还原掉之后的值，这样滑块显示的始终是绝对值。
+			if (mVoltSnapshot.MsvddLimitMaxMv > 0)
+			{
+				_msvddBaseMinMv = (int)(mVoltSnapshot.MsvddLimitMinMv - mVoltSnapshot.Msvdd.VminUv / 1000);
+				_msvddBaseMaxMv = (int)(mVoltSnapshot.MsvddLimitMaxMv - mVoltSnapshot.Msvdd.RelUv / 1000);
+				_appliedMsvddMinMv = (int)mVoltSnapshot.MsvddLimitMinMv;
+				_appliedMsvddMaxMv = (int)mVoltSnapshot.MsvddLimitMaxMv;
+				if (MsvddMinSlider != null)
+				{
+					MsvddMinSlider.Minimum = _absMinMv;
+					MsvddMinSlider.TickFrequency = ((mVoltSnapshot.MsvddStepUv > 0) ? ((double)mVoltSnapshot.MsvddStepUv / 1000.0) : 5.0);
+					MsvddMaxSlider.TickFrequency = MsvddMinSlider.TickFrequency;
+				}
+			}
 			if (mVoltSnapshot.NvvddMinUv > 0 && mVoltSnapshot.NvvddMaxUv > 0)
 			{
 				_absMinMv = (int)(mVoltSnapshot.NvvddMinUv / 1000);
@@ -1197,7 +1250,6 @@ private static string Fmt(double v, string unit)
 		{
 			SetSlider(VoltSlider, VoltOffsetLabel, _voltOffsetMv);
 			SetSlider(XbarSlider, XbarOffsetLabel, _xbarOffsetMv);
-			SetSliderQuiet(OvSlider, _ovOffsetMv);
 
 			SetSlider(MinVoltSlider, MinVoltLabel, _baseMinMv + _vminOffsetMv);
 			int ceiling = Math.Min(_baseMaxMv + _relOffsetMv, OV_BASE_MV + _ovOffsetMv);
@@ -1207,9 +1259,15 @@ private static string Fmt(double v, string unit)
 				MaxVoltLabel.Text = ceiling + " mV";
 			}
 
-			UpdateOvLabels();
+			SetSlider(MsvddMinSlider, MsvddMinLabel, _msvddBaseMinMv + _msvddVminOffsetMv);
+			int msvddCeiling = Math.Min(_msvddBaseMaxMv + _msvddRelOffsetMv, OV_BASE_MV + _msvddOvOffsetMv);
+			SetSliderQuiet(MsvddMaxSlider, msvddCeiling);
+			if (MsvddMaxLabel != null)
+			{
+				MsvddMaxLabel.Text = msvddCeiling + " mV";
+			}
+
 			ClampMinSlider();
-			UpdateOffsetSummary();
 		}
 
 		private static void SetSlider(Slider s, TextBlock label, int value)
@@ -1254,8 +1312,37 @@ private static string Fmt(double v, string unit)
 				int num = (int)Math.Round(e.NewValue);
 				_vminOffsetMv = num - _baseMinMv;
 				MinVoltLabel.Text = num + " mV";
-				UpdateOffsetSummary();
 			}
+		}
+
+		private void OnMsvddMinChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+		{
+			if (MsvddMinLabel != null)
+			{
+				int num = (int)Math.Round(e.NewValue);
+				_msvddVminOffsetMv = num - _msvddBaseMinMv;
+				MsvddMinLabel.Text = num + " mV";
+			}
+		}
+
+		private void OnMsvddMaxChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+		{
+			if (MsvddMaxLabel == null || _syncingVoltControls)
+			{
+				return;
+			}
+			int num = (int)Math.Round(e.NewValue);
+			if (num >= _msvddBaseMaxMv)
+			{
+				_msvddRelOffsetMv = num - _msvddBaseMaxMv;
+				_msvddOvOffsetMv = 0;
+			}
+			else
+			{
+				_msvddRelOffsetMv = 0;
+				_msvddOvOffsetMv = num - OV_BASE_MV;
+			}
+			MsvddMaxLabel.Text = num + " mV";
 		}
 
 		/// <summary>
@@ -1304,9 +1391,6 @@ private static string Fmt(double v, string unit)
 				_ovOffsetMv = num - OV_BASE_MV;
 			}
 			MaxVoltLabel.Text = num + " mV";
-			SetSliderQuiet(OvSlider, _ovOffsetMv);
-			UpdateOvLabels();
-			UpdateOffsetSummary();
 			ClampMinSlider();
 		}
 
@@ -1354,56 +1438,53 @@ private static string Fmt(double v, string unit)
 			}
 		}
 
-		private void UpdateOvLabels()
+		/// <summary>
+		/// Toggles mVolt+'s Boost lock.
+		///
+		/// The lock lives on the companion tool's side and is not saved in its profiles, so the
+		/// state is read back from it rather than remembered here: this program stores nothing
+		/// about it, and on the next start the button shows whatever the tool reports.
+		/// </summary>
+		private void OnToggleBoostLock(object sender, RoutedEventArgs e)
 		{
-			if (OvLabel != null)
+			if (!_mvoltReady)
 			{
-				OvLabel.Text = "待下发 " + Signed(_ovOffsetMv) + "  →  OV 限值 " + (OV_BASE_MV + _ovOffsetMv) + " mV";
+				Warn("未找到 mVolt+。BoostLock 由它执行，请把它放到本程序同目录，或在“设置”里指定路径。");
+				return;
 			}
-		}
-
-		private void UpdateOffsetSummary()
-		{
-			if (MinFormulaLabel != null)
+			bool want = !_boostLocked;
+			string boostError;
+			if (!MVolt.SetBoostLock(_state.MvoltPath, want, out boostError))
 			{
-				MinFormulaLabel.Text = "下限  " + _baseMinMv + " + " + _vminOffsetMv + " = " + (_baseMinMv + _vminOffsetMv) + " mV";
-				int num = _baseMaxMv + _relOffsetMv;
-				int num2 = OV_BASE_MV + _ovOffsetMv;
-				bool flag = num2 < num;
-				MaxFormulaLabel.Text = "上限  " + _baseMaxMv + " + " + _relOffsetMv + " = " + num + " mV";
-				if (OvParenthetical != null)
-				{
-					OvParenthetical.Text = (flag ? ("(OV " + num2 + " 将封顶 → 上限 " + num2 + " mV)") : ("(OV " + num2 + ")"));
-					OvParenthetical.SetResourceReference(TextBlock.ForegroundProperty, flag ? "Warn" : "TextDim");
-				}
-				MaxFormulaLabel.SetResourceReference(TextBlock.ForegroundProperty, flag ? "Warn" : "TextMain");
+				Warn(boostError);
+				return;
 			}
+			_boostLocked = want;
+			Store.Log("BoostLock: " + (want ? "已开启" : "已关闭"));
+			UpdateBoostLockButton();
+			ActionHint.Text = want ? "已锁定加速频率。" : "已解除加速频率锁定。";
 		}
 
 		/// <summary>
-		/// The OV slider, linked to the maximum above rather than independent of it.
+		/// Paints the BoostLock button from _boostLocked.
 		///
-		/// Both controls describe the same ceiling, so dragging this one has to move that one too.
-		/// Leaving them independent was the confusing part: moving 最高电压 to 1000 wrote OV -200
-		/// and the OV slider followed, but dragging OV afterwards left 最高电压 claiming a ceiling
-		/// that was no longer in force. REL is not touched here — the ceiling is simply whatever
-		/// the tighter of the two limits yields.
+		/// Content carries the action and the caption carries the state, the same split the
+		/// prerequisite chips use: reading "解除锁定" tells you what pressing it does, and
+		/// "已锁定" tells you where you are, without either having to say both.
 		/// </summary>
-		private void OnOvSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+		private void UpdateBoostLockButton()
 		{
-			if (OvLabel == null || _syncingVoltControls)
+			if (BoostLockButton == null)
 			{
 				return;
 			}
-			_ovOffsetMv = (int)Math.Round(e.NewValue);
-
-			int num = Math.Min(_baseMaxMv + _relOffsetMv, OV_BASE_MV + _ovOffsetMv);
-			SetSliderQuiet(MaxVoltSlider, num);
-			MaxVoltLabel.Text = num + " mV";
-
-			UpdateOvLabels();
-			UpdateOffsetSummary();
-			ClampMinSlider();
+			BoostLockButton.Content = _boostLocked ? "解除锁定" : "锁定超频";
+			if (BoostLockState != null)
+			{
+				BoostLockState.Text = _boostLocked ? "已锁定" : "未锁定";
+				BoostLockState.SetResourceReference(TextBlock.ForegroundProperty,
+					_boostLocked ? "Warn" : "TextMuted");
+			}
 		}
 
 		private void OnVoltReset(object sender, RoutedEventArgs e)
@@ -1414,6 +1495,10 @@ private static string Fmt(double v, string unit)
 			_relOffsetMv = 0;
 			_altOffsetMv = 0;
 			_ovOffsetMv = 0;
+			_msvddVminOffsetMv = 0;
+			_msvddRelOffsetMv = 0;
+			_msvddAltOffsetMv = 0;
+			_msvddOvOffsetMv = 0;
 			UpdateVoltOffsetLabel();
 		}
 
@@ -1842,6 +1927,10 @@ private static string Fmt(double v, string unit)
 			_relOffsetMv = (int)(restorePoint.Voltage.Nvvdd.RelUv / 1000);
 			_altOffsetMv = (int)(restorePoint.Voltage.Nvvdd.AltUv / 1000);
 			_ovOffsetMv = (int)(restorePoint.Voltage.Nvvdd.OvUv / 1000);
+			_msvddVminOffsetMv = (int)(restorePoint.Voltage.Msvdd.VminUv / 1000);
+			_msvddRelOffsetMv = (int)(restorePoint.Voltage.Msvdd.RelUv / 1000);
+			_msvddAltOffsetMv = (int)(restorePoint.Voltage.Msvdd.AltUv / 1000);
+			_msvddOvOffsetMv = (int)(restorePoint.Voltage.Msvdd.OvUv / 1000);
 			SaveState();
 			PushStateToControls();
 			Store.Log("已撤销到: " + label);
@@ -1942,6 +2031,10 @@ private static string Fmt(double v, string unit)
 			_relOffsetMv = (int)(desiredState.Voltage.Nvvdd.RelUv / 1000);
 			_altOffsetMv = (int)(desiredState.Voltage.Nvvdd.AltUv / 1000);
 			_ovOffsetMv = (int)(desiredState.Voltage.Nvvdd.OvUv / 1000);
+			_msvddVminOffsetMv = (int)(desiredState.Voltage.Msvdd.VminUv / 1000);
+			_msvddRelOffsetMv = (int)(desiredState.Voltage.Msvdd.RelUv / 1000);
+			_msvddAltOffsetMv = (int)(desiredState.Voltage.Msvdd.AltUv / 1000);
+			_msvddOvOffsetMv = (int)(desiredState.Voltage.Msvdd.OvUv / 1000);
 			SaveState();
 			PushStateToControls();
 			RefreshAll(logIt: false);
@@ -2045,11 +2138,25 @@ private static string Fmt(double v, string unit)
 			};
 		}
 
+		internal RailOffsets PendingMsvddOffsets()
+		{
+			return new RailOffsets
+			{
+				VminUv = (long)_msvddVminOffsetMv * 1000L,
+				RelUv = (long)_msvddRelOffsetMv * 1000L,
+				AltUv = (long)_msvddAltOffsetMv * 1000L,
+				OvUv = (long)_msvddOvOffsetMv * 1000L
+			};
+		}
+
 		internal bool AnyVoltagePending()
 		{
 			if (_voltOffsetMv == 0 && _xbarOffsetMv == 0 && _vminOffsetMv == 0 && _relOffsetMv == 0 && _altOffsetMv == 0)
 			{
-				return _ovOffsetMv != 0;
+				if (_ovOffsetMv != 0) return true;
+				// MSVDD 是独立的一条轨，只有它非零时同样算有东西要下发。
+				return _msvddVminOffsetMv != 0 || _msvddRelOffsetMv != 0 ||
+					   _msvddAltOffsetMv != 0 || _msvddOvOffsetMv != 0;
 			}
 			return true;
 		}
@@ -2059,6 +2166,7 @@ private static string Fmt(double v, string unit)
 			into.Voltage.DemandCoreMv = _voltOffsetMv;
 			into.Voltage.DemandXbarMv = _xbarOffsetMv;
 			into.Voltage.Nvvdd = PendingRailOffsets();
+			into.Voltage.Msvdd = PendingMsvddOffsets();
 			into.Voltage.Enabled = AnyVoltagePending();
 		}
 

@@ -470,6 +470,11 @@ namespace NvpwrControl
         public long NvvddMinUv, NvvddMaxUv, NvvddStepUv;
         public long NvvddLimitMinMv, NvvddLimitMaxMv;
         public long MsvddMinUv, MsvddMaxUv, MsvddStepUv;
+        // MSVDD 当前生效的上下限，和 NvvddLimitMinMv/MaxMv 一个意思 —— 没有它就只能把
+        // MSVDD 滑块做成偏移，做不成绝对值。
+        public long MsvddLimitMinMv, MsvddLimitMaxMv;
+        /// <summary>mVolt+ 报告的 BoostLock 状态。</summary>
+        public bool BoostLocked;
         public bool HasEnforced;
         public uint EnforcedMw;
     }
@@ -652,6 +657,10 @@ namespace NvpwrControl
             long lim;
             if (TryLong(json, "nvvdd_min_mv", out lim)) snap.NvvddLimitMinMv = lim;
             if (TryLong(json, "nvvdd_max_mv", out lim)) snap.NvvddLimitMaxMv = lim;
+            if (TryLong(json, "msvdd_min_mv", out lim)) snap.MsvddLimitMinMv = lim;
+            if (TryLong(json, "msvdd_max_mv", out lim)) snap.MsvddLimitMaxMv = lim;
+            // BoostLock 是布尔，TryLong 解不了，直接找字面量。
+            if (json.IndexOf("\"boost_lock\":true", StringComparison.Ordinal) >= 0) snap.BoostLocked = true;
 
             long mw;
             if (TryLong(json, "enforced_mw", out mw)) { snap.HasEnforced = true; snap.EnforcedMw = (uint)mw; }
@@ -750,6 +759,34 @@ namespace NvpwrControl
             long mv = (mag + 500) / 1000;
             if (mv * 1000 != mag) rounded = true;
             return sign * mv;
+        }
+
+        /// <summary>
+        /// Toggles mVolt+'s Boost lock.
+        ///
+        /// BoostLock pins the boosted clock so the GPU stops ramping with load. It is a session
+        /// setting on the companion tool's side — the CLI says "not saved in profiles" — so the
+        /// state is read back rather than stored here: this program remembers nothing about it,
+        /// and on the next start the button reflects whatever the tool reports.
+        /// </summary>
+        public static bool SetBoostLock(string explicitPath, bool on, out string error)
+        {
+            error = null;
+            string exe = Find(explicitPath);
+            if (string.IsNullOrEmpty(exe)) { error = "未找到 mVolt+"; return false; }
+            if (!File.Exists(exe)) { error = "配置的 mVolt+ 路径不存在: " + exe; return false; }
+
+            string output = Run(exe, "--boost-lock " + (on ? "on" : "off"), 30000, out error);
+            if (output == null) return false;
+
+            MVoltSnapshot check = QueryStatus(explicitPath);
+            if (check.Ok && check.BoostLocked != on)
+            {
+                error = "mVolt+ 未保留 BoostLock 状态（请求" + (on ? "开启" : "关闭") +
+                        "，回读" + (check.BoostLocked ? "开启" : "关闭") + "）";
+                return false;
+            }
+            return true;
         }
 
         public static bool Reset(string explicitPath, out string error)
