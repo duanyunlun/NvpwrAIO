@@ -49,9 +49,75 @@ namespace NvpwrControl
         public bool IsZero { get { return Nvvdd.IsZero && Msvdd.IsZero && DemandIsZero; } }
     }
 
-    internal sealed class ClockTuning
+    /// <summary>
+    /// The factory power wall, kept in the registry rather than in a state file.
+    ///
+    /// WHY the registry: this is a property of the CARD, not of a tuning session. A state file
+    /// belongs to whatever the user was last doing and gets rewritten constantly — slots,
+    /// undo, restore-defaults all write it — so a fact that must never change was living in the
+    /// one place that changes most. The registry key is per-machine, is written once, and is
+    /// readable by both this program and the service without either having to locate the other's
+    /// working directory.
+    ///
+    /// WHY keyed by profile: a different GPU profile means different hardware or a different
+    /// VBIOS and therefore a different wall, so that comparison is the only thing that may
+    /// invalidate the record. Nothing else rewrites it.
+    /// </summary>
+    internal static class FactoryWall
     {
-        public bool Enabled;
+        private const string KeyPath = @"SOFTWARE\NvpwrControl";
+        private const string ValueWall = "FactoryWallW";
+        private const string ValueProfile = "FactoryWallProfile";
+
+        /// <summary>
+        /// Reads the record. Returns false when it is absent or belongs to a different GPU.
+        ///
+        /// On a profile mismatch the stale pair is deliberately left in place rather than
+        /// cleared: it is still the right answer for the card it was measured on, and if the
+        /// machine ever goes back to that card the value is still valid.
+        /// </summary>
+        public static bool TryRead(uint profile, out int watts)
+        {
+            watts = 0;
+            try
+            {
+                using (Microsoft.Win32.RegistryKey k =
+                       Microsoft.Win32.Registry.LocalMachine.OpenSubKey(KeyPath, false))
+                {
+                    if (k == null) return false;
+                    object w = k.GetValue(ValueWall);
+                    object p = k.GetValue(ValueProfile);
+                    if (w == null || p == null) return false;
+                    if (Convert.ToUInt32(p) != profile) return false;
+                    int v = Convert.ToInt32(w);
+                    if (v <= 0) return false;
+                    watts = v;
+                    return true;
+                }
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Writes the record. Called once, from whichever side sees stock first.</summary>
+        public static bool Write(uint profile, int watts)
+        {
+            try
+            {
+                using (Microsoft.Win32.RegistryKey k =
+                       Microsoft.Win32.Registry.LocalMachine.CreateSubKey(KeyPath, true))
+                {
+                    if (k == null) return false;
+                    k.SetValue(ValueWall, watts, Microsoft.Win32.RegistryValueKind.DWord);
+                    k.SetValue(ValueProfile, profile, Microsoft.Win32.RegistryValueKind.DWord);
+                    return true;
+                }
+            }
+            catch { return false; }
+        }
+    }
+
+    internal sealed class ClockTuning
+    {        public bool Enabled;
         public long CoreOffsetMhz, MemoryOffsetMhz, XbarOffsetMhz;
 
         /// <summary>

@@ -374,27 +374,86 @@ static bool QueryDriverBaseline(unsigned int& oemBaselineMw, unsigned int& profi
     Failing here is not fatal. The replay still runs, and the record is simply still
     absent, which the GUI also handles.
 */
-static void CapturePowerFloorIfAbsent() {
-    DesiredState st{};
-    std::wstring err;
-    if (!nvpwr::LoadDesiredState(st, err)) {
-        SvcLog(L"power floor: state unreadable: " + err);
-        return;
+/*
+    The factory wall lives in the registry, under HKLM\SOFTWARE\NvpwrControl, keyed by GPU
+    profile.
+
+    It is a property of the card rather than of a tuning session, so it does not belong in the
+    state file — that file belongs to whatever the user was last doing and is rewritten by
+    every slot save, undo and restore-defaults. A fact that must never change should not live
+    in the file that changes most. Both this service and the GUI read the same key, so neither
+    has to locate the other's working directory, and a hit ends the search immediately.
+*/
+static const wchar_t* kFactoryWallKey = L"SOFTWARE\\NvpwrControl";
+
+static bool ReadFactoryWall(unsigned int profile, unsigned int& watts) {
+    HKEY k = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kFactoryWallKey, 0, KEY_READ, &k) != ERROR_SUCCESS) return false;
+
+    bool ok = false;
+    DWORD type = 0;
+    DWORD size = sizeof(DWORD);
+    DWORD wall = 0;
+    if (RegQueryValueExW(k, L"FactoryWallW", nullptr, &type, (LPBYTE)&wall, &size) == ERROR_SUCCESS &&
+        type == REG_DWORD && wall > 0) {
+        DWORD stored = 0;
+        size = sizeof(DWORD);
+        if (RegQueryValueExW(k, L"FactoryWallProfile", nullptr, &type, (LPBYTE)&stored, &size) == ERROR_SUCCESS &&
+            type == REG_DWORD && stored == profile) {
+            watts = wall;
+            ok = true;
+        }
     }
+    RegCloseKey(k);
+    return ok;
+}
+
+static bool WriteFactoryWall(unsigned int profile, unsigned int watts) {
+    HKEY k = nullptr;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, kFactoryWallKey, 0, nullptr, 0,
+                        KEY_SET_VALUE, nullptr, &k, nullptr) != ERROR_SUCCESS) {
+        return false;
+    }
+    bool ok = RegSetValueExW(k, L"FactoryWallW", 0, REG_DWORD,
+                             (const BYTE*)&watts, sizeof(watts)) == ERROR_SUCCESS &&
+              RegSetValueExW(k, L"FactoryWallProfile", 0, REG_DWORD,
+                             (const BYTE*)&profile, sizeof(profile)) == ERROR_SUCCESS;
+    RegCloseKey(k);
+    return ok;
+}
+
+static void CapturePowerFloorIfAbsent(const DesiredState& current) {
+    DesiredState st = current;
 
     unsigned int baselineMw = 0, profile = 0, supportedMinMw = 0;
+    std::wstring err;
     if (!QueryDriverBaseline(baselineMw, profile, supportedMinMw, err)) {
         SvcLog(L"power floor: " + err);
         return;
     }
+
+    /* Already on record for this GPU? Then there is nothing to look up. */
+    unsigned int recorded = 0;
+    if (ReadFactoryWall(profile, recorded)) {
+        if (st.powerFloorW != recorded || st.powerFloorProfile != profile) {
+            st.powerFloorW = recorded;
+            st.powerFloorProfile = profile;
+            nvpwr::SaveDesiredState(st, err);
+        }
+        return;
+    }
+
     if (baselineMw == 0) {
-        SvcLog(L"power floor: driver reports no baseline yet");
+        /*
+            The driver reports no baseline. That is NOT a fallback case — there is nothing else
+            to read it from. The enforced limit is the wall right now, not the one the card
+            shipped with, so writing it down records a raised ceiling as factory.
+        */
+        SvcLog(L"power floor: driver reports no baseline yet, leaving the record empty");
         return;
     }
 
     const unsigned int floorW = baselineMw / 1000u;
-    if (st.powerFloorW == floorW && st.powerFloorProfile == profile) return;
-
     if (supportedMinMw != 0 && baselineMw > supportedMinMw) {
         SvcLog(L"power floor: not captured, wall is above stock (" + std::to_wstring(floorW) +
                L" W > " + std::to_wstring(supportedMinMw / 1000u) +
@@ -402,15 +461,16 @@ static void CapturePowerFloorIfAbsent() {
         return;
     }
 
-    const bool firstTime = (st.powerFloorW == 0);
     st.powerFloorW = floorW;
     st.powerFloorProfile = profile;
-    if (!nvpwr::SaveDesiredState(st, err)) {
-        SvcLog(L"power floor: could not save: " + err);
-        return;
+    nvpwr::SaveDesiredState(st, err);
+    if (WriteFactoryWall(profile, floorW)) {
+        SvcLog(L"power floor recorded: " + std::to_wstring(floorW) + L" W (profile " +
+               std::to_wstring(profile) + L") — written to HKLM\\SOFTWARE\\NvpwrControl");
+    } else {
+        SvcLog(L"power floor recorded: " + std::to_wstring(floorW) +
+               L" W (profile " + std::to_wstring(profile) + L") but the registry write failed");
     }
-    SvcLog((firstTime ? L"power floor recorded: " : L"power floor re-recorded for a new profile: ") +
-           std::to_wstring(floorW) + L" W (profile " + std::to_wstring(profile) + L")");
 }
 
 /* ------------------------------------------------------------------ */
@@ -521,6 +581,19 @@ static bool ReplayDesiredState(const wchar_t* reason, int attempts = 1, int dela
         if (OpenDevice(derr)) {
             bool ok = true;
             std::wstring stageErr;
+
+            /*
+                Record the factory wall HERE, not before the loop.
+
+                It has to run once the device is open — the driver may not be loaded yet when the
+                service starts, which is exactly what happened on this machine: every startup
+                logged "device not open" and the record stayed empty, after which the GUI fell
+                back to a live reading and wrote a raised ceiling down as factory.
+
+                And it has to run before the first SendPower, because that is what raises the
+                ceiling. Between those two points the driver's OemBaseline is the truth.
+            */
+            CapturePowerFloorIfAbsent(state);
 
             /* Stage 1: power limit. This is the part only this project can do. */
             if (state.powerEnabled && state.power.milliwatts) {
@@ -683,14 +756,10 @@ static DWORD WINAPI ServiceThread(LPVOID) {
     SetServiceState(SERVICE_RUNNING);
 
     /*
-        Record the factory wall BEFORE the first replay.
-
-        This is the whole reason the service carries the record: at this instant the
-        wall is still whatever the card shipped with, so the driver's OemBaseline is
-        the truth. One line later the replay may raise it, and from then on no live
-        reading can tell the two apart.
+        The factory wall is recorded inside ReplayDesiredState instead, once the device is
+        actually open. Running it here meant it ran before the driver had loaded, which on this
+        machine is every boot.
     */
-    CapturePowerFloorIfAbsent();
 
     /* First replay: retry for a while because the display stack is usually not
        ready immediately after boot. */

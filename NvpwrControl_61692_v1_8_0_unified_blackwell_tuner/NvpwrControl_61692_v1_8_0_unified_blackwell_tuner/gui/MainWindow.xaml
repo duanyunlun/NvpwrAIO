@@ -610,6 +610,10 @@
                             <Border Width="3" CornerRadius="2" Margin="0,1,8,1"
                                     Background="{StaticResource Info}"/>
                             <TextBlock Text="NVVDD" Style="{StaticResource SectionTitle}"/>
+                            <TextBlock Style="{StaticResource Caption}" Foreground="{StaticResource TextDim}"
+                                       VerticalAlignment="Center" Margin="10,0,0,0"
+                                       Text="核心本体供电 · 抬高最低电压可防止满载掉压，是提分主力"
+                                       ToolTip="NVVDD 是 GPU 核心（SM / 着色器 / 纹理单元）的供电轨，也是唯一用户可调的那一条。&#10;典型 0.6–1.0 V，功耗占比最大。&#10;抬高它的最低电压能防止满载时电压塌陷，让核心更稳地维持高频 —— 实测这是提升分数最有效的一项。"/>
                         </StackPanel>
 
                         <Grid Margin="0,10,0,0">
@@ -648,6 +652,10 @@
                             <Border Width="3" CornerRadius="2" Margin="0,1,8,1"
                                     Background="{StaticResource Warn}"/>
                             <TextBlock Text="MSVDD" Style="{StaticResource SectionTitle}"/>
+                            <TextBlock Style="{StaticResource Caption}" Foreground="{StaticResource TextDim}"
+                                       VerticalAlignment="Center" Margin="10,0,0,0"
+                                       Text="交叉开关 / L2 / 内存接口供电 · XBAR 时钟跑在这个域上"
+                                       ToolTip="MSVDD 是核心与显存之间那部分电路的供电轨：交叉开关（XBAR）、L2 缓存和内存接口。&#10;它和 NVVDD 是物理上分开的两条轨，各有独立的电压和功率遥测。&#10;GPU 内部的 XBAR 时钟就跑在这个域上 —— 所以这里的上下限直接决定 XBAR 能跑多高。"/>
                         </StackPanel>
 
                         <Grid Margin="0,10,0,0">

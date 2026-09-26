@@ -250,21 +250,26 @@ namespace NvpwrControl
 			if (Driver.QueryStatus(out var status, out var _))
 			{
 				/*
-					The record wins, with one exception: a different GPU profile means different
-					hardware or a different VBIOS, so the wall is a different number and the old
-					one is meaningless. Nothing else may rewrite it — not a live reading, not a
-					restart, not the ceiling having moved.
+					The registry record comes first, and a hit ends the search.
 
-					The service captures this first at boot, before it replays anything, which is
-					the only moment the answer is certain. This path exists for the case where the
-					service is not installed and the GUI is the only thing running.
+					This is a property of the CARD, so it lives somewhere a card property belongs
+					rather than in the state file — which belongs to the last tuning session and is
+					rewritten by every slot save, undo and restore-defaults. A fact that must never
+					change should not live in the file that changes most.
+
+					A different GPU profile means different hardware or a different VBIOS and
+					therefore a different wall, and that is the only thing that may invalidate the
+					record. Nothing else rewrites it — not a live reading, not a restart, not the
+					ceiling having moved.
 				*/
-				bool profileChanged = _state.PowerFloorProfile != 0 &&
-									  _state.PowerFloorProfile != status.ActiveProfile;
-				if (_state.PowerFloorW > 0 && !profileChanged)
+				int recorded;
+				if (FactoryWall.TryRead(status.ActiveProfile, out recorded))
 				{
-					return _state.PowerFloorW;
+					_state.PowerFloorW = recorded;
+					_state.PowerFloorProfile = status.ActiveProfile;
+					return recorded;
 				}
+
 				/*
 					Only record it while the wall is demonstrably untouched.
 
@@ -284,10 +289,11 @@ namespace NvpwrControl
 						_state.PowerFloorW = fromDriver;
 						_state.PowerFloorProfile = status.ActiveProfile;
 						_state.PowerFloorBoot = stamp;
-						Store.Log((profileChanged ? "显卡型号变化，出厂功耗墙已重记: " : "出厂功耗墙已记录: ") +
-								  fromDriver + " W（驱动 OemBaseline，profile " + status.ActiveProfile +
-								  "，建立于 " + boot.ToString("MM-dd HH:mm:ss") + "）");
 						SaveState();
+						FactoryWall.Write(status.ActiveProfile, fromDriver);
+						Store.Log("出厂功耗墙已记录: " + fromDriver + " W（驱动 OemBaseline，profile " +
+								  status.ActiveProfile + "，已写入注册表 HKLM\\SOFTWARE\\NvpwrControl，" +
+								  "建立于 " + boot.ToString("MM-dd HH:mm:ss") + "）");
 						return fromDriver;
 					}
 				}
@@ -299,17 +305,24 @@ namespace NvpwrControl
 				}
 			}
 
-			EnvSample envSample = Telemetry.Sample();
-			if (envSample.HasPowerLimit && envSample.EnforcedLimitW > 0.0)
-			{
-				int captured = (int)Math.Round(envSample.EnforcedLimitW);
-				_state.PowerFloorW = captured;
-				_state.PowerFloorBoot = stamp;
-				Store.Log("出厂功耗墙已记录: " + captured + " W（NVML，建立于 " +
-						  boot.ToString("MM-dd HH:mm:ss") + "）");
-				SaveState();
-				return captured;
-			}
+			/*
+				Nothing is recorded here, and nothing may be.
+
+				There used to be an NVML fallback that read the enforced limit when the driver had
+				no baseline to offer. That fallback is what kept poisoning this record: the enforced
+				limit is the wall RIGHT NOW, not the one the card shipped with, so on any run where
+				the ceiling had already been raised it wrote the raised value down as factory. That
+				is how the record came to say 250 W while the machine's real wall is 175 W — twice,
+				on separate days, each time after a deploy had reloaded the driver while the ceiling
+				was up.
+
+				A missing record costs nothing: the display falls back to a live reading and the next
+				boot fills the record in properly. A wrong record costs everything, because the whole
+				point of a record is that nothing later can tell it is wrong.
+
+				So: the driver's OemBaseline, and only that. A baseline of zero means "not knowable
+				yet", not "try something else".
+			*/
 			return 350;
 		}
 
