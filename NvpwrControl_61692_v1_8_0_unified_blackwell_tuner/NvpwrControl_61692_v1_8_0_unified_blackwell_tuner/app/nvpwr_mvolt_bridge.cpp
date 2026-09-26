@@ -485,6 +485,53 @@ bool ApplyVoltageViaMVolt(const VoltageTuning& tuning, std::wstring& error,
     return true;
 }
 
+/*
+    Replays the stored clock offsets through mVolt+.
+
+    Only the domains that are non-zero are passed. mVolt+ leaves an unnamed control alone, which
+    is what makes a partial replay safe: a state file with only a core offset must not silently
+    clear a memory offset the user set with another tool.
+*/
+bool ApplyClocksViaMVolt(const ClockTuning& tuning, std::wstring& error,
+                         const std::wstring& explicitPath)
+{
+    error.clear();
+
+    std::wstring cmd = QuoteArg(FindMVoltExecutable(explicitPath));
+    if (cmd.empty() || cmd == L"\"\"") { error = L"mVolt+ was not found"; return false; }
+    if (!MVoltAvailable(explicitPath)) {
+        error = L"the configured mVolt+ path does not exist";
+        return false;
+    }
+
+    int named = 0;
+    auto add = [&](const wchar_t* option, long value) {
+        if (value == 0) return;
+        std::wstringstream a;
+        a << L" " << option << L" " << value;
+        cmd += a.str();
+        ++named;
+    };
+
+    add(L"--core",         tuning.coreOffsetMhz);
+    add(L"--mem",          tuning.memoryOffsetMhz);
+    add(L"--xbar-offset",  tuning.xbarOffsetMhz);
+    add(L"--sys-offset",   tuning.sysOffsetMhz);
+
+    if (named == 0) {
+        /* Nothing to do is a success, not a failure: an all-zero clock state means the user
+           never set one, and the replay should say so quietly rather than reporting an error. */
+        return true;
+    }
+
+    std::wstring output, err;
+    if (!RunCapture(cmd, output, 30000, err)) {
+        error = L"mVolt+ could not be run: " + err;
+        return false;
+    }
+    return true;
+}
+
 bool ResetVoltageViaMVolt(std::wstring& error, const std::wstring& explicitPath) {
     error.clear();
     VoltageTuning zero{};

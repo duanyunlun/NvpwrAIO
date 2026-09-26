@@ -113,6 +113,45 @@ namespace NvpwrControl
                 return false;
             }
 
+            bool installed = Query() != "未安装";
+
+            /*
+                Stop it first, whether or not it is running.
+
+                Not "uninstall then install" — the service is not deleted — but a restart has to
+                happen, and the reason is specific.
+
+                sc config changes binPath, and that takes effect at the NEXT start. sc start on a
+                service that is already running returns 1056, which this method tolerates because
+                it is normally harmless. Put together, those two produce a state that is not
+                harmless at all: the configuration can point at the new binary while the running
+                process is still the old one — most easily when the program is run from a new
+                folder, so binPath is a different path than the running image. Nothing in the
+                service list or in this window would show it, and this service is the component
+                that rewrites driver memory at boot.
+
+                Stopping first makes the restarted process the configured binary by construction.
+                It costs about a second.
+            */
+            if (installed && Query() == "运行中")
+            {
+                string stopOut;
+                RunSc("stop " + Name, out stopOut);
+                for (int i = 0; i < 40; i++)
+                {
+                    if (Query() != "运行中" && Query() != "停止中") break;
+                    System.Threading.Thread.Sleep(200);
+                }
+                if (Query() == "运行中" || Query() == "停止中")
+                {
+                    error = "旧的服务进程没有在 8 秒内停下，无法确保新版本真正生效。\r\n" +
+                            "继续安装会留下一个跑着旧代码的服务进程，所以这里停手了。\r\n\r\n" +
+                            "请手动结束 NvpwrSvc.exe 后重试。";
+                    return false;
+                }
+                Store.Log("安装服务: 已先停止旧进程，确保重启后运行的是当前版本");
+            }
+
             // sc.exe is used rather than the SCM API because a single call is
             // clearer here and the failure text is directly actionable.
             //
@@ -144,6 +183,11 @@ namespace NvpwrControl
                     return false;
                 }
             }
+
+            // Report what is actually running now, not what was asked for. The check above
+            // makes a mismatch impossible in the normal path, but printing the configured path
+            // turns "should be right" into something the log can be read against.
+            Store.Log("后台服务已安装并启动: " + exe);
             return true;
         }
 

@@ -133,6 +133,23 @@ bool ImportVoltageFromMVolt(VoltageTuning& out, std::wstring& error,
 bool ApplyVoltageViaMVolt(const VoltageTuning& tuning, std::wstring& error,
                           bool* rounded = nullptr,
                           const std::wstring& explicitPath = L"");
+/*
+    Applies clock offsets through the companion tool.
+
+    Separate from the voltage call because mVolt+ takes them as separate options and leaves
+    whatever is not named alone — so a replay that must not disturb the clocks passes neither,
+    and one that must not disturb the rails passes only these.
+
+    WHY the service replays these at all: until now it replayed power and voltage and stopped,
+    so the core/memory/XBar/SYS offsets were written to the state file at every apply and then
+    ignored at boot. After a reboot the user got the power ceiling back and silently lost the
+    clocks. This closes that.
+
+    SYS goes through the same CLI as the rest even though the GUI cannot touch it through NVAPI:
+    for a replay the transport does not matter, only that the stored value reaches the driver.
+*/
+bool ApplyClocksViaMVolt(const ClockTuning& tuning, std::wstring& error,
+                         const std::wstring& explicitPath = L"");
 
 /* Resets both rails to zero offsets through mVolt+. */
 bool ResetVoltageViaMVolt(std::wstring& error,

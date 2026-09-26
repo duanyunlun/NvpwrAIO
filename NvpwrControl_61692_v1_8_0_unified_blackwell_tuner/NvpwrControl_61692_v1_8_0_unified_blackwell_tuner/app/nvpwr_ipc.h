@@ -30,9 +30,6 @@
 #include "nvpwr_ui_state.h"
 
 namespace nvpwr {
-
-/* Pipe name. The `Local\` prefix keeps it machine-local. */
-constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\NvpwrControl.v1";
 constexpr wchar_t kServiceName[] = L"NvpwrSvc";
 constexpr wchar_t kServiceDisplayName[] = L"Nvpwr Control Background Service";
 
@@ -107,30 +104,5 @@ bool StartServiceNow(std::wstring& error);
 /* Auto-start registration for the GUI itself (tray), separate from the service. */
 bool SetGuiAutoStart(bool enable, std::wstring& error);
 bool GetGuiAutoStart();
-
-/* ---------------- pipe client (used by the GUI) ---------------- */
-
-struct IpcStatus {
-    bool    powerEnabled = false;
-    unsigned int powerMw = 0;
-    unsigned int ceilingMw = 0;
-    unsigned int oemMw = 0;
-    unsigned int activeState = 0;
-    bool    voltageEnabled = false;
-    bool    driverOpen = false;
-};
-
-/*
-    Sends one command. Returns false when the service is not reachable, which
-    the caller treats as "fall back to direct device access" rather than as an
-    error worth interrupting the user with.
-*/
-bool IpcCall(const std::wstring& request, std::wstring& response, std::wstring& error);
-
-/* Convenience wrappers. */
-bool IpcPing(std::wstring& error);
-bool IpcApplyPower(unsigned int milliwatts, unsigned int ceilingMw, unsigned int profile,
-                   std::wstring& error);
-bool IpcRestore(std::wstring& error);
 
 } /* namespace nvpwr */

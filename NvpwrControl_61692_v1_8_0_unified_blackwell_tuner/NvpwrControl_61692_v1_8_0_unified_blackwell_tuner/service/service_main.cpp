@@ -38,7 +38,6 @@ using nvpwr::DesiredState;
 static SERVICE_STATUS_HANDLE g_statusHandle = nullptr;
 static SERVICE_STATUS g_status{};
 static HANDLE g_stopEvent = nullptr;
-static HANDLE g_pipe = nullptr;
 
 /*
     Signalled when a user logs on.
@@ -119,8 +118,39 @@ static std::wstring ExeDirectory() {
     return (p == std::wstring::npos) ? L"." : s.substr(0, p);
 }
 
-static bool IsRegularFile(const std::wstring& path) {
-    DWORD a = GetFileAttributesW(path.c_str());
+/*
+    "Which binary am I?" — written to the log at every start.
+
+    This service rewrites driver memory, so knowing which build produced a given boot's log is
+    the difference between a diagnosis and a guess. It matters more than usual here because the
+    same program is run from whatever folder it was extracted to, while the installed service
+    points at one specific path — and a service that is already running keeps running its old
+    image when sc config changes binPath. Install now stops it first, and this line is how to
+    confirm that worked.
+*/
+static std::wstring SelfIdentity() {
+    wchar_t path[MAX_PATH]{};
+    if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) return L"(unknown path)";
+
+    std::wstring out = path;
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (GetFileAttributesExW(path, GetFileExInfoStandard, &fad)) {
+        FILETIME local{};
+        SYSTEMTIME st{};
+        if (FileTimeToLocalFileTime(&fad.ftLastWriteTime, &local) &&
+            FileTimeToSystemTime(&local, &st)) {
+            wchar_t stamp[64]{};
+            swprintf_s(stamp, L"%04u-%02u-%02u %02u:%02u:%02u",
+                       st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+            out += L"  (built ";
+            out += stamp;
+            out += L")";
+        }
+    }
+    return out;
+}
+
+static bool IsRegularFile(const std::wstring& path) {    DWORD a = GetFileAttributesW(path.c_str());
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
@@ -611,6 +641,37 @@ static bool ReplayVoltageViaCompanion(const DesiredState& state) {
 }
 
 /*
+    Replays the stored clock offsets.
+
+    Until this existed the service replayed power and voltage and stopped. The four clock
+    offsets were written to the state file on every apply and then ignored at boot, so a reboot
+    returned the power ceiling and silently dropped the overclock — the state file said one
+    thing and the driver another, with nothing in the log either way.
+
+    Runs last, after the ceiling is up and the rails are set, because a clock offset is only
+    meaningful once there is voltage and power headroom for it to use.
+*/
+static bool ReplayClocksViaCompanion(const DesiredState& state) {
+    if (!state.clock.enabled || state.clock.IsZero()) return true;
+    if (!nvpwr::MVoltAvailable(state.mvoltPath)) {
+        SvcLog(L"clocks: companion tool (mVolt+) was not found; clock offsets were NOT applied");
+        return false;
+    }
+
+    std::wstring err;
+    if (!nvpwr::ApplyClocksViaMVolt(state.clock, err, state.mvoltPath)) {
+        SvcLog(L"clocks: apply failed: " + err);
+        return false;
+    }
+
+    SvcLog(L"clocks: applied core=" + std::to_wstring(state.clock.coreOffsetMhz) +
+           L" mem=" + std::to_wstring(state.clock.memoryOffsetMhz) +
+           L" xbar=" + std::to_wstring(state.clock.xbarOffsetMhz) +
+           L" sys=" + std::to_wstring(state.clock.sysOffsetMhz));
+    return true;
+}
+
+/*
     Re-applies the persisted state. Retries because at boot this routinely runs
     before nvlddmkm.sys is ready; a single failure at startup must not be treated
     as "the user's settings do not work".
@@ -665,6 +726,13 @@ static bool ReplayDesiredState(const wchar_t* reason, int attempts = 1, int dela
                 stageErr += L"voltage: see the line above; the power limit remains applied; ";
             }
 
+            /* Stage 3: clock offsets. Last, so the ceiling and the rails are already in place
+               for them to use. A clock failure does not undo either. */
+            if (!ReplayClocksViaCompanion(state)) {
+                ok = false;
+                stageErr += L"clocks: see the line above; power and voltage remain applied; ";
+            }
+
             if (!stageErr.empty()) {
                 SvcLog(std::wstring(L"replay(") + reason + L"): " + stageErr);
             } else {
@@ -682,122 +750,6 @@ static bool ReplayDesiredState(const wchar_t* reason, int attempts = 1, int dela
 
 /* ------------------------------------------------------------------ */
 /* pipe protocol                                                      */
-/* ------------------------------------------------------------------ */
-
-static std::wstring HandleCommand(const std::wstring& line) {
-    std::wistringstream in(line);
-    std::wstring verb;
-    in >> verb;
-
-    if (verb == L"PING") return L"OK\r\nEND\r\n";
-
-    if (verb == L"STATUS") {
-        DesiredState st{};
-        std::wstring err;
-        nvpwr::LoadDesiredState(st, err);
-
-        std::wstringstream out;
-        out << L"OK\r\n";
-        out << L"power_enabled=" << (st.powerEnabled ? 1 : 0) << L"\r\n";
-        out << L"power_mw=" << st.power.milliwatts << L"\r\n";
-        out << L"ceiling_mw=" << st.power.ceilingMw << L"\r\n";
-        out << L"voltage_enabled=" << (st.voltage.enabled ? 1 : 0) << L"\r\n";
-        out << L"clock_enabled=" << (st.clock.enabled ? 1 : 0) << L"\r\n";
-        out << L"END\r\n";
-        return out.str();
-    }
-
-    if (verb == L"APPLY") {
-        unsigned int mw = 0, ceiling = 0, profile = 0;
-        std::wstring token;
-        while (in >> token) {
-            size_t eq = token.find(L'=');
-            if (eq == std::wstring::npos) continue;
-            std::wstring key = token.substr(0, eq);
-            unsigned int val = (unsigned int)wcstoul(token.c_str() + eq + 1, nullptr, 10);
-            if (key == L"power_mw") mw = val;
-            else if (key == L"ceiling_mw") ceiling = val;
-            else if (key == L"profile") profile = val;
-        }
-        if (mw == 0) return L"ERR zero target rejected\r\n";
-
-        std::wstring err;
-        if (!SendPower(mw, ceiling, profile, err)) return L"ERR " + err + L"\r\n";
-
-        DesiredState st{};
-        nvpwr::LoadDesiredState(st, err);
-        st.powerEnabled = true;
-        st.power.milliwatts = mw;
-        st.power.ceilingMw = ceiling;
-        st.power.profile = profile;
-        nvpwr::SaveDesiredState(st, err);
-        SvcLog(L"APPLY " + std::to_wstring(mw) + L" mW ceiling " + std::to_wstring(ceiling));
-        return L"OK\r\nEND\r\n";
-    }
-
-    if (verb == L"RESTORE") {
-        std::wstring err;
-        if (!SendRestore(err)) return L"ERR " + err + L"\r\n";
-        DesiredState st{};
-        nvpwr::LoadDesiredState(st, err);
-        st.powerEnabled = false;
-        st.power = nvpwr::PowerTarget{};
-        nvpwr::SaveDesiredState(st, err);
-        SvcLog(L"RESTORE requested");
-        return L"OK\r\nEND\r\n";
-    }
-
-    if (verb == L"SHUTDOWN") {
-        SvcLog(L"SHUTDOWN requested over the pipe");
-        SetEvent(g_stopEvent);
-        return L"OK\r\nEND\r\n";
-    }
-
-    return L"ERR unknown command\r\n";
-}
-
-static bool ReadRequest(HANDLE pipe, std::wstring& request) {
-    request.clear();
-
-    /* The wire format is UTF-8, so bytes are accumulated narrow and converted
-       once. Appending the raw bytes straight into a std::wstring would both fail
-       to compile and, if forced, produce mangled text. */
-    std::string raw;
-    char buf[1024];
-    for (;;) {
-        DWORD got = 0;
-        if (!ReadFile(pipe, buf, sizeof(buf), &got, nullptr)) break;
-        if (got == 0) break;
-        raw.append(buf, got);
-        if (raw.find('\n') != std::string::npos) break;
-    }
-    if (raw.empty()) return false;
-
-    int n = MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), (int)raw.size(), nullptr, 0);
-    std::wstring wide((size_t)n, L'\0');
-    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), (int)raw.size(), &wide[0], n);
-    while (!wide.empty() && (wide.back() == L'\r' || wide.back() == L'\n')) wide.pop_back();
-    request = wide;
-    return !request.empty();
-}
-
-static bool WriteResponse(HANDLE pipe, const std::wstring& response) {
-    int n = WideCharToMultiByte(CP_UTF8, 0, response.c_str(), (int)response.size(),
-                                nullptr, 0, nullptr, nullptr);
-    std::string utf8((size_t)n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, response.c_str(), (int)response.size(),
-                        &utf8[0], n, nullptr, nullptr);
-    DWORD total = 0;
-    while (total < utf8.size()) {
-        DWORD wrote = 0;
-        if (!WriteFile(pipe, utf8.data() + total, (DWORD)(utf8.size() - total), &wrote, nullptr))
-            return false;
-        if (wrote == 0) return false;
-        total += wrote;
-    }
-    FlushFileBuffers(pipe);
-    return true;
-}
 
 /* ------------------------------------------------------------------ */
 /* service body                                                       */
@@ -898,45 +850,16 @@ static DWORD WINAPI ServiceThread(LPVOID) {
     */
     WaitForDesktopThenReplay();
 
-    HANDLE events[2] = { g_stopEvent, nullptr };
+    /*
+        Nothing left to do but wait to be stopped.
 
-    for (;;) {
-        /* Create the pipe before waiting so a client can always connect. */
-        g_pipe = CreateNamedPipeW(nvpwr::kPipeName,
-                                  PIPE_ACCESS_DUPLEX,
-                                  PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE |
-                                  PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                                  1, 8192, 8192, 0, nullptr);
-        if (g_pipe == INVALID_HANDLE_VALUE) {
-            SvcLog(L"CreateNamedPipe failed; retrying in 2 s");
-            if (WaitForSingleObject(g_stopEvent, 2000) == WAIT_OBJECT_0) break;
-            continue;
-        }
-
-        events[1] = g_pipe;
-        DWORD wait = WaitForMultipleObjects(2, events, FALSE, INFINITE);
-        if (wait == WAIT_OBJECT_0) {          /* stop requested */
-            CloseHandle(g_pipe);
-            g_pipe = nullptr;
-            break;
-        }
-
-        BOOL connected = ConnectNamedPipe(g_pipe, nullptr)
-            ? TRUE
-            : (GetLastError() == ERROR_PIPE_CONNECTED);
-
-        if (connected) {
-            std::wstring request;
-            if (ReadRequest(g_pipe, request)) {
-                std::wstring response = HandleCommand(request);
-                WriteResponse(g_pipe, response);
-            }
-            DisconnectNamedPipe(g_pipe);
-        }
-        CloseHandle(g_pipe);
-        g_pipe = nullptr;
-    }
-
+        A named-pipe server used to live here, serving STATUS / APPLY / RESTORE / PING /
+        SHUTDOWN. The GUI never spoke to it — it drives the device directly — and neither did
+        anything else, so it was a protocol with no clients: code that could only ever break,
+        never work, sitting in the one process that rewrites driver memory. Removed rather than
+        left as an unused surface.
+    */
+    WaitForSingleObject(g_stopEvent, INFINITE);
     SetServiceState(SERVICE_STOPPED);
     return 0;
 }
@@ -990,6 +913,8 @@ static void WINAPI ServiceMain(DWORD, LPWSTR*) {
     g_logonEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
     SvcLog(L"service starting");
+    /* 哪个二进制在跑 —— 见 SelfIdentity 的注释。这条日志是把"应该是新版"变成可核对的事实。 */
+    SvcLog(L"running image: " + SelfIdentity());
     ServiceThread(nullptr);
     SvcLog(L"service stopped");
 }

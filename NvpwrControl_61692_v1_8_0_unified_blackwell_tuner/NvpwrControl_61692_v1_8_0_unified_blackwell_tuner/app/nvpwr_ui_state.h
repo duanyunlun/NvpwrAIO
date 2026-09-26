@@ -127,6 +127,11 @@ struct ClockTuning {
     /* SYS / host-interface domain. Replayed through mVolt+ like the others, but it is the one
        the NVAPI ClockDomains path does not address, so it carries a field of its own. */
     long sysOffsetMhz    = 0;
+
+    bool IsZero() const {
+        return coreOffsetMhz == 0 && memoryOffsetMhz == 0 &&
+               xbarOffsetMhz == 0 && sysOffsetMhz == 0;
+    }
 };
 
 /* ---------------- full desired state ---------------- */
