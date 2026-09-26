@@ -55,6 +55,31 @@
             <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
 
+        <!--
+            Tooltips must wrap, and this is the only place that can guarantee it.
+
+            WPF renders a ToolTip whose Content is a plain string through a ContentPresenter
+            whose TextBlock does not wrap. Setting MaxWidth on the ToolTip then bounds the frame
+            while the text runs straight through it, so a long line is clipped rather than
+            folded — the SYS tooltip ended mid-word at 细微影响, and the prerequisite pills did
+            the same. MaxWidth alone looks like it should work and does not, which is why this
+            was written five separate times before being fixed once.
+
+            No x:Key, so it is implicit and applies to every ToolTip: the ones set from XAML,
+            the ones the Tip() helper builds, and the prerequisite pills built by hand. All
+            three had the same defect and none of them needs to know about this.
+        -->
+        <Style TargetType="ToolTip">
+            <Setter Property="MaxWidth" Value="420"/>
+            <Setter Property="ContentTemplate">
+                <Setter.Value>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}" TextWrapping="Wrap" MaxWidth="400"/>
+                    </DataTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="CardNote" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
             <Setter Property="FontSize" Value="11.5"/>

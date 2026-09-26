@@ -364,14 +364,22 @@ namespace NvpwrControl
 			Tip(MemNow, "显存时钟，与 nvidia-smi、MSI Center 同口径（本例 9001 MHz）。\nGDDR7 每个时钟传输两次数据，所以等效传输速率约为该值的 2 倍（约 18 Gbps）。\n本程序直接显示驱动的原始读数，不做换算——这样与其它工具对得上。");
 		}
 
+		/// <summary>
+		/// Attaches a tooltip.
+		///
+		/// The wrapping is NOT set here: it comes from the implicit ToolTip style in the window
+		/// resources, which every ToolTip picks up whether it was built here, written in XAML, or
+		/// assembled by hand somewhere else. Setting MaxWidth on the ToolTip was tried and does
+		/// not work on its own — the default template renders a plain string through a TextBlock
+		/// that does not wrap, so the text runs past the frame and is clipped mid-word.
+		/// </summary>
 		private static void Tip(FrameworkElement element, string text)
 		{
 			if (element != null && !string.IsNullOrEmpty(text))
 			{
 				element.ToolTip = new ToolTip
 				{
-					Content = text,
-					MaxWidth = 380.0
+					Content = text
 				};
 			}
 		}
@@ -406,11 +414,11 @@ namespace NvpwrControl
 				{
 					text2 += "\n\n点击可切换（需要管理员权限，改动后需重启生效）。";
 				}
-				border.ToolTip = new ToolTip
-				{
-					Content = text2,
-					MaxWidth = 380.0
-				};
+				// Through Tip() rather than assigning ToolTip here, so there is one place that
+				// builds tooltips. The wrapping itself comes from the implicit ToolTip style in
+				// the window resources — this call used to set MaxWidth and that alone, which
+				// bounds the frame without wrapping the text inside it.
+				Tip(border, text2);
 				if (flag)
 				{
 					border.Cursor = Cursors.Hand;
@@ -2434,11 +2442,9 @@ private static string Fmt(double v, string unit)
 			string text = Service.Query();
 			bool flag = text != "未安装";
 			ServiceButton.Content = (flag ? "卸载服务" : "安装服务");
-			ServiceButton.ToolTip = new ToolTip
-			{
-				Content = (flag ? ("后台服务已安装（" + text + "）。\n它在开机和从休眠恢复时重新下发功耗与频率，让设置在重启后继续生效。\n点击卸载。") : "安装后台服务。\nGPU 的功耗策略只存在于驱动内存，重启必然丢失；服务会在开机时自动重放你的设置。\n点击安装。"),
-				MaxWidth = 380.0
-			};
+			Tip(ServiceButton, flag
+				? ("后台服务已安装（" + text + "）。\n它在开机和从休眠恢复时重新下发功耗与频率，让设置在重启后继续生效。\n点击卸载。")
+				: "安装后台服务。\nGPU 的功耗策略只存在于驱动内存，重启必然丢失；服务会在开机时自动重放你的设置。\n点击安装。");
 		}
 
 		private void OnOpenSlots(object sender, RoutedEventArgs e)
