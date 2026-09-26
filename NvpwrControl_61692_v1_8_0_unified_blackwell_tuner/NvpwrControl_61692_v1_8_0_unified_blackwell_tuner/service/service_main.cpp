@@ -707,30 +707,56 @@ static bool ReplayDesiredState(const wchar_t* reason, int attempts = 1, int dela
             */
             CapturePowerFloorIfAbsent(state);
 
-            /* Stage 1: power limit. This is the part only this project can do. */
-            if (state.powerEnabled && state.power.milliwatts) {
-                std::wstring perr;
-                if (!SendPower(state.power.milliwatts, state.power.ceilingMw,
-                               state.power.profile, perr)) {
-                    ok = false; stageErr += L"power: " + perr + L"; ";
+            /*
+                The stages retry as a group, and the retry is the point.
+
+                Measured on this machine: a start where the driver had just been loaded returned
+                ERROR_GEN_FAILURE from Phase A — the driver's own failure to converge — and the
+                identical request succeeded a minute later with no other change. The device being
+                OPEN is not the same as the driver being ready to rewrite its power policy, and
+                OpenDevice only knows the former.
+
+                Only the failure path costs anything: a successful replay returns after one pass.
+                A persistent failure is reported once, after the last attempt, so the log does
+                not fill with the same line four times.
+            */
+            const int kStageAttempts = 4;
+            for (int stageTry = 0; stageTry < kStageAttempts; ++stageTry) {
+                ok = true;
+                stageErr.clear();
+
+                /* Stage 1: power limit. This is the part only this project can do. */
+                if (state.powerEnabled && state.power.milliwatts) {
+                    std::wstring perr;
+                    if (!SendPower(state.power.milliwatts, state.power.ceilingMw,
+                                   state.power.profile, perr)) {
+                        ok = false; stageErr += L"power: " + perr + L"; ";
+                    }
                 }
-            }
 
-            /* Stage 2: voltage through the companion tool. Runs after power so
-               the ceiling is already raised when voltage widens what the GPU
-               will actually draw. A voltage failure does NOT undo the power
-               limit, and the log states that explicitly rather than implying the
-               whole replay failed. */
-            if (!ReplayVoltageViaCompanion(state)) {
-                ok = false;
-                stageErr += L"voltage: see the line above; the power limit remains applied; ";
-            }
+                /* Stage 2: voltage through the companion tool. Runs after power so
+                   the ceiling is already raised when voltage widens what the GPU
+                   will actually draw. A voltage failure does NOT undo the power
+                   limit, and the log states that explicitly rather than implying the
+                   whole replay failed. */
+                if (!ReplayVoltageViaCompanion(state)) {
+                    ok = false;
+                    stageErr += L"voltage: see the line above; the power limit remains applied; ";
+                }
 
-            /* Stage 3: clock offsets. Last, so the ceiling and the rails are already in place
-               for them to use. A clock failure does not undo either. */
-            if (!ReplayClocksViaCompanion(state)) {
-                ok = false;
-                stageErr += L"clocks: see the line above; power and voltage remain applied; ";
+                /* Stage 3: clock offsets. Last, so the ceiling and the rails are already in place
+                   for them to use. A clock failure does not undo either. */
+                if (!ReplayClocksViaCompanion(state)) {
+                    ok = false;
+                    stageErr += L"clocks: see the line above; power and voltage remain applied; ";
+                }
+
+                if (ok || stageTry + 1 >= kStageAttempts) break;
+
+                SvcLog(std::wstring(L"replay(") + reason + L"): attempt " +
+                       std::to_wstring(stageTry + 1) + L" of " + std::to_wstring(kStageAttempts) +
+                       L" failed (" + stageErr + L"), retrying");
+                if (WaitForSingleObject(g_stopEvent, 5000) == WAIT_OBJECT_0) break;
             }
 
             if (!stageErr.empty()) {

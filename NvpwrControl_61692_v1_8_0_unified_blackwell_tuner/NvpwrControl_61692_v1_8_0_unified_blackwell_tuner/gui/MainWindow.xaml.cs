@@ -357,8 +357,6 @@ namespace NvpwrControl
 			Tip(PwNow, "GPU 当前实际功耗。空闲时只有几十瓦，烤机时才会接近上限。\n判断解锁是否真的生效，看这个值在负载下能不能超过出厂上限。");
 			Tip(PwTemp, "核心温度 / 温度墙。\n余量 = 温度墙 − 核心温度，是判断提高功耗上限后能否吃满的依据。");
 			Tip(VoltNow, "核心电压实时读数（µV 精度，每秒刷新）。\n来源是 NVAPI 的未公开接口 ClientVoltRailsGetStatus，已在本地验证过。");
-			Tip(MsvddVoltNow, "MSVDD 轨实时电压，来源是 HWiNFO 的共享内存。\n公开的 NVAPI 接口里没有这条轨的实测值 —— 项目文档明确写了不声称能读到它 —— 所以这里借用 HWiNFO 的传感器读数；HWiNFO 没运行时显示 —。");
-			Tip(MsvddLimitsNow, "MSVDD 当前**实际生效**的电压上下限，从 mVolt+ 回读。\n这是电压策略值，不是实测电压；实测值看左边。");
 			Tip(VoltLimitsNow, "当前**实际生效**的电压上下限，从 mVolt+ 回读，不是待下发的值。\n下限 = 出厂下限 + VMIN 偏移；上限 = min(REL, ALT/OP, OV) 的评估结果。\n拖动滑块不会改变这里 —— 只有点“应用”并回读成功后才更新。\n注意这是电压策略值，不是实测电压；实测值看左边的“核心电压”。");
 			Tip(ClkCore, "核心频率偏移，单位 MHz。\n合法范围标在输入框两侧，超出会被拒绝，不会下发给驱动。");
 			Tip(ClkMem, "显存频率偏移，单位 MHz。\n与核心偏移独立；显存超频过高通常表现为画面异常而不是死机。");
@@ -934,18 +932,6 @@ namespace NvpwrControl
 			MemNow.Text = (envSample.HasMemoryClock ? Fmt(envSample.MemoryClockMhz, " MHz") : "—");
 			PwTemp.Text = ((envSample.HasTemp && envSample.HasSpeedThreshold) ? (Fmt(envSample.TempC, "") + "/" + Fmt(envSample.SpeedThresholdC, " °C")) : (envSample.HasTemp ? Fmt(envSample.TempC, " °C") : "—"));
 			VoltLimitsNow.Text = _appliedMinMv + "–" + _appliedMaxMv + " mV";
-			MsvddLimitsNow.Text = _appliedMsvddMinMv + "–" + _appliedMsvddMaxMv + " mV";
-			/*
-				MSVDD 的实测电压只有 HWiNFO 有。公开的 NVAPI 接口不暴露这条轨 —— 项目文档
-				里明确写了 "Physical MSVDD ADC is not claimed" —— 所以这里读 HWiNFO 的共享
-				内存，没装或没开共享内存时显示 —，而不是拿请求值冒充实测值。
-			*/
-			double msvddVolts;
-			MsvddVoltNow.Text = Telemetry.TryReadMsvddVolts(out msvddVolts)
-				? msvddVolts.ToString("0.000", CultureInfo.InvariantCulture) + " V"
-				: "—";
-			MsvddVoltNow.SetResourceReference(TextBlock.ForegroundProperty,
-				(msvddVolts > 0.0) ? "Warn" : "TextDim");
 			long microVolts;
 			string error;
 			bool flag = Tuning.TryReadVoltageUv(out microVolts, out error);
