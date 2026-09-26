@@ -2,3 +2,9 @@
 *.bak
 *.bak2
 *.bak3
+# 构建产物
+**/obj/
+**/bin/
+**/publish/
+**/x64/Release/
+*.user
