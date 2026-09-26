@@ -1,124 +1,178 @@
-﻿# NVIDIA Laptop GPU Power Limit Control (Unified RTX 40 & 50 Series Tuner)
+# NvpwrAIO
 
-> Low-level power management tuner and TDP unlocker for **NVIDIA GeForce RTX 40 Series** (Ada Lovelace) and **RTX 50 Series** (Blackwell) Laptop GPUs.
+> **TGP unlocker and voltage/frequency tuner for NVIDIA laptop GPUs**, built around a kernel
+> driver that edits NVIDIA's live power-policy objects in memory.
 
----
-
-## Overview
-
-Modern gaming and workstation laptops enforce strict Total Graphics Power (TGP) ceilings through internal NVIDIA driver policies and Dynamic Boost limits. Standard overclocking utilities like MSI Afterburner can adjust core and memory clock offsets, but they cannot adjust the TGP ceiling beyond the OEM factory limits on laptop GPUs.
-
-**NvpwrControl** interfaces directly with the live NVIDIA kernel driver (`nvlddmkm.sys`) power-policy objects in system memory to raise the maximum power limit above factory OEM caps, unlocking sustained performance under heavy workloads.
+**English** · [中文](README.zh-CN.md)
 
 ---
 
-## Supported Hardware & Power Target Ranges
+## What this is
 
-### RTX 40 Series (Ada Lovelace) Laptop GPUs
-| GPU | Baseline / Stock Range | Target Power Limit Range | Step |
-|---|---|---|---|
-| **RTX 4090 Laptop GPU** | 115W – 175W | **150W – 250W** | 5W |
-| **RTX 4080 Laptop GPU** | 115W – 175W | **150W – 225W** | 5W |
-| **RTX 4070 Laptop GPU** | 100W – 140W | **120W – 150W** | 5W |
-| **RTX 4060 Laptop GPU** | 100W – 140W | **120W – 150W** | 5W |
-| **RTX 4050 Laptop GPU** | 95W – 115W | **115W – 140W** | 5W |
+Laptop GPUs enforce their Total Graphics Power (TGP) ceiling inside the NVIDIA kernel driver,
+not in a file. MSI Afterburner and similar tools can offset core and memory clocks, but on a
+laptop nothing in user mode can raise the TGP ceiling past what the OEM shipped — the setting
+does not exist anywhere writable.
 
-### RTX 50 Series (Blackwell) Laptop GPUs
-| GPU | Baseline / Stock Range | Target Power Limit Range | Step |
-|---|---|---|---|
-| **RTX 5090 Laptop GPU** | 150W – 175W | **175W – 225W** | 5W |
-| **RTX 5080 Laptop GPU** | 150W – 175W | **175W – 225W** | 5W |
-| **RTX 5070 Ti Laptop GPU** | 115W – 140W | **145W – 180W** | 5W |
-| **RTX 5070 Laptop GPU** | 115W – 140W | **145W – 180W** | 5W |
-| **RTX 5060 Laptop GPU** | 100W – 115W | **120W – 140W** | 5W |
+This project adds a small kernel driver that finds the driver's live power-policy objects,
+changes the policy fields its native generator reads, and then calls NVIDIA's own setters so the
+change goes through the same code path the driver would use itself.
 
----
+Around that driver sit a WPF interface, a command-line tool, and a service that re-applies the
+settings after a reboot.
 
-## Driver Requirements
+### What "the settings do not persist" actually means
 
-- Validated on **NVIDIA Driver 616.92** (`nvlddmkm.sys` PE timestamp `0x6A9B4070`, size `0x06D3E000`).
-- The kernel driver validates exact driver binary structures before mutating any memory offsets, failing closed if signatures do not match.
+Everything this project changes lives in driver memory. It is gone on reboot, and it is also
+gone on a display-driver reload — which happens without a reboot more often than people expect.
+Measured on the reference machine: core +200 MHz and memory +500 MHz applied through the
+companion CLI read back as **0** after the display device was restarted, so this is not specific
+to the power ceiling.
+
+That is the whole reason the service exists. It records the factory wall once, then re-applies
+power, voltage and clocks after the desktop is up.
 
 ---
 
-## Quick Start Guide
+## Components
 
-Because `Nvpwr.sys` is a custom kernel driver built to interact with NVIDIA's driver in memory, Windows 64-bit requires **Test-Signing Mode** with **Secure Boot disabled**.
+| Binary | Role |
+|---|---|
+| `Nvpwr.sys` | Kernel driver. Resolves `nvlddmkm.sys` in memory and edits the power-policy objects. |
+| `NvpwrControl.exe` | WPF front end. Power, voltage rails, clock offsets, presets, prerequisite checks. |
+| `NvpwrCtl.exe` | Command-line tool. Same IOCTLs, useful for scripts and for diagnosis. |
+| `NvpwrSvc.exe` | Background service. Records the factory wall, replays settings after logon. |
 
-### Step 1: Disable Secure Boot in BIOS/UEFI
-1. Restart your laptop and press **Del** (or **F2**) to enter BIOS.
-2. Navigate to the **Security** or **Boot** settings.
-3. Set **Secure Boot** to **Disabled**.
-4. Press **F10** to save changes and restart your laptop.
-   *(Note: Windows kernel ignores test-signing if Secure Boot is enabled in hardware).*
-
-### Step 2: Enable Windows Test Mode & Trust Certificate
-1. Open the downloaded release folder.
-2. Right-click **`install-cert-and-enable-testmode.cmd`** and select **Run as administrator**.
-   - This automatically installs `Nvpwr.cer` into Windows Trusted Root / Trusted Publishers.
-   - It executes `bcdedit /set testsigning on`.
-3. **Restart your PC**.
-   *(After restart, "Test Mode" watermark will appear in the bottom-right corner of your desktop).*
-
-### Step 3: Run the Tuner & Apply Desired Power
-1. Right-click **`NvpwrControl.exe`** and select **Run as administrator**.
-2. The application will detect your GPU model, display your current OEM baseline power, and load available target wattages.
-3. Select your desired target from the dropdown (e.g. up to 250W on RTX 4090 Laptop) and click **Apply**.
-4. Verify the power draw using **HWiNFO**, **GPU-Z**, or your favorite monitoring overlay under heavy GPU load.
+The GUI and the CLI both talk to `\\.\Nvpwr` directly. They do not talk to each other, and the
+service is not required for either to work — it only makes settings survive a reboot.
 
 ---
 
-## Switching Back for Games Requiring Secure Boot
+## Requirements
 
-Competitive multiplayer games with kernel-level anti-cheats (such as **Valorant / Riot Vanguard**, **EA Sports FC / EA Anti-Cheat**, or **Faceit CS2**) require Secure Boot to be enabled and Test Mode to be turned off.
+### Driver version — read this first
 
-To switch back to standard OEM mode:
-1. Open Command Prompt or PowerShell as **Administrator**.
-2. Run:
-   ```cmd
-   bcdedit /set testsigning off
-   ```
-3. Enter your BIOS on reboot and set **Secure Boot** back to **Enabled**.
-4. Your laptop will boot normally and run at its standard factory OEM limits (e.g. 175W in Extreme Performance mode) with all anti-cheat games working.
+**The kernel driver is pinned to one exact build of `nvlddmkm.sys`.** It validates the PE
+identity and six machine-code signatures before it touches anything, and returns
+`STATUS_REVISION_MISMATCH` if they do not match.
+
+| | |
+|---|---|
+| Validated on | NVIDIA driver **616.92** |
+| PE timestamp | `0x6A9B4070` |
+| SizeOfImage | `0x06D3E000` |
+
+**It will refuse to run on any other driver version, by design.** Porting it to a new driver is
+a reverse-engineering task with a known checklist — see
+[docs/PORTING_TO_A_NEW_DRIVER.md](docs/PORTING_TO_A_NEW_DRIVER.md).
+
+### Machine prerequisites
+
+All three must hold, and the interface shows them as five status chips on the status bar:
+
+| Requirement | Why |
+|---|---|
+| **Secure Boot disabled** | EfiGuard cannot install while it is on |
+| **VBS / Virtualization-Based Security disabled** | With VBS on, the DSE patch does not take effect |
+| **Booted through EfiGuard** | The driver cannot load without DSE temporarily disabled |
+
+See [docs/DEPLOYMENT_AND_EFIGUARD.md](docs/DEPLOYMENT_AND_EFIGUARD.md) — **parts of the setup
+must be built and installed per machine**, including `EfiDSEFix.exe`, which cannot be taken from
+EfiGuard's official release.
 
 ---
 
-## Built-In NVAPI Overclocking (User-Mode)
+## Quick start
 
-In addition to TGP unlocking, `NvpwrControl` includes direct user-mode NVAPI tuning:
-- **Core Clock Offset**: Up to ±1000 MHz
-- **Memory Clock Offset**: Up to ±3000 MHz
-- **Telemetry Readout**: Real-time clock domains, P-states, and rail information.
-
----
-
-## Building from Source
-
-To compile the project from source:
-
-### Prerequisites
-- Visual Studio 2022 or Visual Studio 18 with **Desktop development with C++**
-- Windows 10/11 SDK and Windows Driver Kit (WDK) 10.0.28000+
-
-### Build Command
-Run the included build script in an elevated PowerShell:
-```powershell
-powershell -ExecutionPolicy Bypass -File .\NvpwrControl_61692_v1_8_0_unified_blackwell_tuner\build.ps1
 ```
-The compiled binaries (`NvpwrControl.exe`, `NvpwrCtl.exe`, `Nvpwr.sys`, and setup scripts) will be output to the `dist\` directory.
+1. Build or obtain the release package          →  release/
+2. Install the test certificate for Nvpwr.sys   →  right-click the .cmd, Run as administrator
+3. Install EfiGuard on the ESP, add a boot entry, boot through it
+4. Run NvpwrControl.exe as administrator
+5. Set the power target, voltage rails and clocks, then click 应用
+6. Install the service if you want it to survive a reboot
+```
+
+The interface is in Chinese. `docs/使用说明.txt` is the user manual, and
+`release/流程说明.md` records how the pieces fit together.
 
 ---
 
-## Thermal & Electrical Safety Warning
+## Repository layout
 
-> **WARNING**: Raising laptop GPU power limits increases electrical load and heat output across the GPU die, VRM power delivery, VRAM, and the laptop cooling subsystem.
+```
+src/          Source. driver/ (kernel), gui/ (WPF), cli/, service/, app/ (shared), shared/
+release/      The complete distributable package, binaries included
+tools/        Build, package, deploy, icon generation, 3DMark tuning scripts
+docs/         Manuals, prerequisite notes, porting notes, tuning measurements
+```
 
-- Always monitor temperatures (`GPU Temp`, `Hotspot`, `Memory Temp`, and `VRM`) using HWiNFO or GPU-Z.
-- Ensure your laptop cooling vents are clean and your AC power adapter has sufficient wattage to sustain higher power draws.
-- All modifications are performed at your own risk.
+### Building
+
+```powershell
+# Kernel driver + CLI + service  (needs WDK 10.0.28000+, MSVC 2022)
+.\src\build.ps1
+
+# CLI and service only — no driver link step, faster to iterate on
+.\src\Build-Cli.ps1
+
+# WPF interface
+dotnet build .\src\gui\NvpwrControl.csproj -c Release
+```
+
+`tools\package.ps1` assembles `release/`. Three of its inputs are not built from this repository
+and are taken as parameters — see the comment block at the top of that script.
 
 ---
 
-## License & Disclaimer
+## Safety
 
-This project is independent research and is not affiliated with, sponsored by, or endorsed by NVIDIA Corporation. NVIDIA, GeForce, and RTX are trademarks of NVIDIA Corporation.
+> Raising a laptop GPU's power ceiling increases current through the VRM, heat through the die
+> and VRAM, and load on a cooling system that was sized for the original ceiling.
+
+- Watch **GPU temperature, hotspot, memory junction and VRM** under sustained load.
+- Confirm the **AC adapter** can actually supply the higher draw; on battery the ceiling will not
+  be honoured anyway.
+- The unlock is undone by a reboot. If anything looks wrong, reboot.
+
+The driver is deliberately fail-closed: it verifies the target build before writing, and on a
+failed transition it restores the baseline captured before its first write in that session.
+
+### Known failure mode: a TDR storm
+
+Under an unstable overclock the GPU can stop responding entirely. Windows logs
+`nvlddmkm` event 153 and writes a watchdog dump, DXGI reports `DEVICE_REMOVED`
+(`0x887A0005`), the desktop goes half-frozen, and **a reboot can take minutes** because the
+shutdown path waits on a driver that is no longer answering.
+
+Measured once on the reference machine: 16 watchdog events and 12 dumps over 45 minutes, and a
+shutdown that took 3 minutes 5 seconds. If a reboot appears to hang, that is what is happening —
+it is not this project's process.
+
+See [docs/tuning/](docs/tuning/) for the measured power/score curve and the settings that
+produced it.
+
+---
+
+## Credits and licence
+
+This is a derivative of
+[**LevinAi-arch/rtx-5070ti-laptop-160w-power-limit**](https://github.com/LevinAi-arch/rtx-5070ti-laptop-160w-power-limit),
+which is where the original driver work, the interface, and the analysis came from. The
+upstream repository carries **no licence** — all rights reserved by its authors.
+
+**Because the upstream work is unlicensed, no licence is granted here either.** This repository
+is published as a source-available record, not as a grant of rights. If you intend to reuse any
+of it, contact the upstream authors.
+
+Additional third-party components are redistributed in `release/` and are **not** covered by
+anything here:
+
+| Component | Author | Note |
+|---|---|---|
+| `mvolt+.exe` | its own author | Voltage-rail CLI the interface and the service both call |
+| `bootx64.efi`, `EfiGuardDxe.efi` | [Mattiwatti/EfiGuard](https://github.com/Mattiwatti/EfiGuard) | Bootloader and DXE driver used to disable DSE |
+| `EfiDSEFix.exe` | built from the same EfiGuard tree | Commit `60a6a57` or later; official releases do not work |
+
+Not affiliated with, sponsored by, or endorsed by NVIDIA Corporation. NVIDIA, GeForce and RTX
+are trademarks of NVIDIA Corporation.

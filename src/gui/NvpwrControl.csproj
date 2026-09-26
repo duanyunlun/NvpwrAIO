@@ -47,6 +47,12 @@
     <CodePage>65001</CodePage>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!--
+      任务栏 / 资源管理器 / Alt-Tab 用的图标。由 tools\make-icon.ps1 生成，
+      它从零画出 7 个尺寸并组装成多分辨率 .ico，不依赖任何图形库或外部素材。
+      每个尺寸单独绘制而不是缩放大图 —— 理由写在那个脚本的头部。
+    -->
+    <ApplicationIcon>NvpwrControl.ico</ApplicationIcon>
     <Version>1.9.0</Version>
     <Product>NV显卡功耗软解</Product>
     <AssemblyTitle>NV显卡功耗软解</AssemblyTitle>

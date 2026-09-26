@@ -19,7 +19,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$dist = Join-Path $root 'dist\NvpwrControl-1.9.0'
+$dist = Join-Path $root 'release'
 
 function Step($m) { Write-Host "  $m" }
 function Fail($m) { Write-Host "  ✗ $m" -ForegroundColor Red; exit 1 }

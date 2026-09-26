@@ -1,0 +1,48 @@
+[13:22:11] ==============================================
+[13:22:11] 本次目标: 功耗 0W  核心 0  显存 0  XBAR 0  NVVDD最小 0  MSVDD最小 0
+[13:22:11] 备注: 
+[13:22:11] 时间安全，距下一个断电点 13:40 还有 17.8 分钟
+[13:22:11] 内核驱动在位，出厂基线 175 W
+[13:22:11] ⚠ HWiNFO 共享内存不可读，本次将没有电压/功耗采样
+[13:22:11] 仅检查模式，结束
+[13:48:07] ==============================================
+[13:48:07] 本次目标: 功耗 200W  核心 200  显存 1000  XBAR 200  NVVDD最小 0  MSVDD最小 0
+[13:48:07] 备注: 200W 安全起点
+[13:48:07] 时间安全，距下一个断电点 18:40 还有 291.9 分钟
+[13:48:07] 内核驱动在位，出厂基线 175 W
+[13:48:07] HWiNFO 共享内存可读
+[13:48:07] 下发功耗墙 200 W
+[13:48:07]     State                : APPLIED (2)
+[13:48:07]     Detail               : 0
+[13:48:07]     Last NTSTATUS        : 0x00000000
+[13:48:07]     Last NVIDIA status   : 0x00000000
+[13:48:07]     TimeDateStamp        : 0x6A9B4070
+[13:48:07]     SizeOfImage          : 0x06D3E000
+[13:48:07]     Flags init/elig/amt  : 1 / 1 / 1
+[13:48:07]     Active profile       : 3
+[13:48:07]     OEM baseline         : 175000 (175.000 W)
+[13:48:07]     F7 input (+3D14)     : 175000 (175.000 W)
+[13:48:07]     amount (+3D18)       : 25000 (25.000 W)
+[13:48:07]     UPPER (+3D24)        : 200000 (200.000 W)
+[13:48:07]     predicted F7         : 200000 (200.000 W)
+[13:48:07]     MAX effective        : 200000 (200.000 W)
+[13:48:07]     Current effective    : 200000 (200.000 W)
+[13:48:07]     Current F7           : 200000 (200.000 W)
+[13:48:07]     Applied target       : 200000 (200.000 W)
+[13:48:07]     生效 200 W
+[13:48:07] 下发频率/电压: core=200 mem=1000 xbar=200 nvvdd_vmin=0 msvdd_vmin=0
+[13:48:07]     {"success":true,"state":{"gpu":"NVIDIA GeForce RTX 5090 Laptop GPU","vbios":"98.03.5c.00.92","adapter_id":"pci-2c1810de-14821462-00002c18-b01-s00","gpu_index":0,"power_limits":{"requested_mw":null,"enforced_mw":200000,"default_mw":95000},"thermal_inputs":[{"channel":1,"available":true,"overridden":false,"input_c":null,"raw":0,"value":"confirmed"},{"channel":2,"available":true,"overridden":false,"input_c":null,"raw":0,"value":"confirmed"},{"channel":3,"available":true,"overridden":false,"input_c":null,"raw":0,"value":"confirmed"},{"channel":4,"available":true,"overridden":false,"input_c":null,"raw":0,"value":"confirmed"},{"channel":5,"available":true,"overridden":false,"input_c":null,"raw":0,"value":"confirmed"}],"nvvdd_min_mv":625,"nvvdd_max_mv":1025,"msvdd_min_mv":655,"msvdd_max_mv":1025,"nvvdd_offsets_uv":{"vmin":0,"rel":0,"alt":0,"ov":0},"nvvdd_device_range_uv":{"minimum":445000,"maximum":1280000,"step":5000},"nvvdd_xoc_ceiling_uv":1280000,"msvdd_offsets_uv":{"vmin":0,"rel":0,"alt":0,"ov":0},"msvdd_device_range_uv":{"minimum":445000,"maximum":1280000,"step":5000},"msvdd_xoc_ceiling_uv":1280000,"core_offset_mhz":200,"core_offset_mhz_limit_min":-1000,"core_offset_mhz_limit_max":1000,"memory_offset_mhz":1000,"memory_offset_mhz_limit_min":-1000,"memory_offset_mhz_limit_max":3000,"power_limit_percent":0,"voltage_boost_percent":0,"xoc":false,"xbar_offset_mhz":200,"xbar_offset_mhz_limit_min":-1000,"xbar_offset_mhz_limit_max":1000,"msvdd_clock_ratio":0.89990,"msvdd_clock_ratio_measured":39.41189,"gpc_mhz":22,"xbar_mhz":886,"sys_offset_mhz":0,"sys_offset_mhz_limit_min":-1000,"sys_offset_mhz_limit_max":1000,"sys_mhz":659,"video_offset_mhz":0,"video_offset_mhz_limit_min":-1000,"video_offset_mhz_limit_max":1000,"video_mhz":482,"boost_lock":false,"voltage_demand_mv":{"Core":0,"Xbar":0,"SYS":0,"Video":0},"voltage_demand_limit_min_mv":-25,"voltage_demand_limit_max_mv":50,"voltage_demand_extended_range":false,"clock_range_mhz":{"locked":false,"uncertain":false,"unknown_after_reset":false,"min":0,"max":3090,"current":450,"limit_min":0,"limit_max":3090}}}
+[13:48:07]     回读 core_offset_mhz = 200
+[13:48:07]     回读 memory_offset_mhz = 1000
+[13:48:07]     回读 xbar_offset_mhz = 200
+[13:48:07]     回读 nvvdd_offsets_uv = "nvvdd_offsets_uv":{"vmin":0,"rel":0,"alt":0,"ov":0}
+[13:48:07]     回读 msvdd_offsets_uv = "msvdd_offsets_uv":{"vmin":0,"rel":0,"alt":0,"ov":0}
+[13:48:08] 遥测采样已启动
+[13:48:08] 3DMark 已在运行 (PID 4268)
+[13:48:08] 点击「运行」/「再次运行」
+[13:48:10] ⚠ 找不到运行按钮 —— 需要先导航到 Time Spy 页面（基准测试 → Time Spy）
+[13:48:12] 点击「基准测试」@ (1654,52)
+[13:48:19] ❌ 仍未找到运行按钮，放弃本次
+[13:48:19] 结束 3DMark 进程 PID 4268
+[13:48:19] 结束 3DMark 进程 PID 19184
+[13:48:19] 结束 3DMark 进程 PID 21816

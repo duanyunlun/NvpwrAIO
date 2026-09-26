@@ -13,23 +13,40 @@
 #   NvpwrSvc.exe                开机自动重放设置的服务
 #   bootx64.efi / EfiGuardDxe.efi  EfiGuard 引导器，安装到 ESP 用
 #   mvolt+.exe                  电压调整（第三方，随包附带，界面里会调用它）
+#
+# 外部依赖：最后三样不是本仓库的产物，需要你自己准备。
+# 它们原本写成本机绝对路径，别人 clone 之后那些路径不存在，脚本会在拷贝阶段
+# 失败，而失败信息指向一个他们从没听说过的目录，所以改成了参数。
+#
+#   -Stage   已经部署好的目录。非 GUI 组件（.sys / .cer / EFI 引导器）从这里取，
+#            而不是从构建输出取 —— 那些文件不是每次构建都会重新生成，构建输出
+#            里的可能比实际部署的旧。
+#   -EfiFix  EfiDSEFix.exe。★ 必须是从 EfiGuard 源码自行构建的版本，官方 release
+#            及其附带二进制早于 commit 60a6a57，在新 Windows 上找不到 g_CiOptions，
+#            每次调用都返回 STATUS_NOT_FOUND。
+#   -EfiBoot EfiGuard 的引导器目录，需含 bootx64.efi 与 EfiGuardDxe.efi。
+#            来源：https://github.com/Mattiwatti/EfiGuard （自行构建）
 
 param(
     [string]$OutDir = "",
     [string]$Configuration = 'Release',
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$Stage   = 'D:\ProgramFiles\nvpwrcontrol',
+    [string]$EfiFix  = 'D:\Work\Github\EfiGuard\Application\EfiDSEFix\bin\EfiDSEFix.exe',
+    [string]$EfiBoot = 'D:\Work\Github\_backup\efiguard-theirs'
 )
 
 $ErrorActionPreference = 'Stop'
 
 $root     = Split-Path -Parent $PSScriptRoot
-$proj     = Join-Path $root 'NvpwrControl_61692_v1_8_0_unified_blackwell_tuner\NvpwrControl_61692_v1_8_0_unified_blackwell_tuner'
+$proj     = Join-Path $root 'src'
 $gui      = Join-Path $proj 'gui'
-$stage    = 'D:\ProgramFiles\nvpwrcontrol'          # 当前部署目录，非 GUI 组件的来源
-$efiFix   = 'D:\Work\Github\EfiGuard\Application\EfiDSEFix\bin\EfiDSEFix.exe'
-$efiBoot  = 'D:\Work\Github\_backup\efiguard-theirs'
 
-if (-not $OutDir) { $OutDir = Join-Path $root 'dist\NvpwrControl-1.9.0' }
+$stage    = $Stage
+$efiFix   = $EfiFix
+$efiBoot  = $EfiBoot
+
+if (-not $OutDir) { $OutDir = Join-Path $root 'release' }
 
 function Step($m) { Write-Host "  $m" }
 function Fail($m) { Write-Host "  ✗ $m" -ForegroundColor Red; exit 1 }
@@ -111,10 +128,15 @@ if (Test-Path $manual) {
     Step "⚠ 未找到 docs\使用说明.txt —— 发布包将没有使用说明"
 }
 
-$readme = Join-Path $root 'POWER_UNLOCK_FLOW.md'
+# 这两个文档现在都在 docs\ 下。之前 流程说明 的源文件在仓库根目录，搬进 docs 之后
+# 这一行没跟着改，于是 Test-Path 失败、拷贝被静默跳过 —— 发布包少了一个文件，而
+# 脚本的输出里只有一句"流程说明.md"没出现，很容易看漏。改成找不到就明确报错。
+$readme = Join-Path $root 'docs\POWER_UNLOCK_FLOW.md'
 if (Test-Path $readme) {
     Copy-Item $readme (Join-Path $OutDir '流程说明.md') -Force
     Step "流程说明.md"
+} else {
+    Step "⚠ 未找到 docs\POWER_UNLOCK_FLOW.md —— 发布包将没有流程说明"
 }
 
 Write-Host "`n=== 3. 结果 ===" -ForegroundColor Cyan
