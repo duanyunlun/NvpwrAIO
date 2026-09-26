@@ -485,7 +485,7 @@
                             <TextBlock Style="{StaticResource Caption}" Foreground="{StaticResource TextDim}"
                                        VerticalAlignment="Center" Margin="12,0,0,0"
                                        Text="核心-显存的交换网络"
-                                       ToolTip="XBAR 是 GPU 内部把核心和显存连起来的交换网络，进出显存的数据都经过它。&#10;对显存敏感的场景（高分辨率、大纹理）提速可能有效；纯计算场景收益很小。&#10;调高后若出现花屏或驱动重置，回退频率，或给电压卡片里的「XBAR 电压偏移」加点电压。"/>
+                                       ToolTip="XBAR 是 GPU 内部把核心和显存连起来的交换网络，进出显存的数据都经过它。&#10;对显存敏感的场景（高分辨率、大纹理）提速可能有效；纯计算场景收益很小。&#10;调高后若出现花屏或驱动重置，回退频率，或在电压卡片里把 MSVDD 的最低电压抬高一点。"/>
                         </StackPanel>
 
                         <!-- SYS —— 系统/主机接口域的时钟。
@@ -561,9 +561,8 @@
                             两条轨各一行实时读数，并排放在卡片顶部。
 
                             原来只有 NVVDD 一行，中间那格是“已应用偏移”。那一格去掉了：
-                            它显示的是需求偏移（通常为 0），而下面的「核心电压偏移」滑块本来
-                            就写着待下发值，两处说的是同一件事，且真正想知道的“驱动现在把电压
-                            限制在哪”已经由右格给出。MSVDD 补上同样的一行，两轨就能对着看。
+                            它显示的是需求偏移（通常为 0），而那个偏移已经没有可调控件了，且真正想知道的
+                            “驱动现在把电压限制在哪”已经由右格给出。MSVDD 补上同样的一行，两条轨就能对着看。
                         -->
                         <Grid Margin="0,10,0,0">
                             <Grid.ColumnDefinitions>
@@ -610,7 +609,7 @@
                         <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
                             <Border Width="3" CornerRadius="2" Margin="0,1,8,1"
                                     Background="{StaticResource Info}"/>
-                            <TextBlock Text="NVVDD · 核心供电轨" Style="{StaticResource SectionTitle}"/>
+                            <TextBlock Text="NVVDD" Style="{StaticResource SectionTitle}"/>
                         </StackPanel>
 
                         <Grid Margin="0,10,0,0">
@@ -638,21 +637,6 @@
                                        Foreground="{StaticResource TextMuted}" Text="上限 —"/>
                         </Grid>
 
-                        <TextBlock Style="{StaticResource RowLabel}" Margin="0,12,0,0" TextTrimming="CharacterEllipsis"
-                                   Text="核心电压偏移 · 直接调请求电压" ToolTip="直接要求核心使用多少电压，与上面的上下限相互独立。&#10;这是 mVolt+ 默认开启的那一项，范围 -25…+50 mV。&#10;上下限是“允许到哪”，这一项是“我要多少”。"/>
-                        <Slider x:Name="VoltSlider" Minimum="-25" Maximum="50" Value="0"
-                                TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
-                                ValueChanged="OnVoltSliderChanged"/>
-                        <Grid Margin="0,2,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" x:Name="VoltOffsetLabel" Style="{StaticResource Caption}"
-                                       Foreground="{StaticResource TextMuted}" Text="待下发 0 mV"/>
-                            <TextBlock Grid.Column="1" x:Name="VoltAllowedLabel" Style="{StaticResource Caption}"
-                                       Text="允许 -25–50 mV"/>
-                        </Grid>
 
                         <Border Height="1" Background="{StaticResource CardBorder}" Margin="0,16,0,0"/>
 
@@ -663,7 +647,7 @@
                         <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
                             <Border Width="3" CornerRadius="2" Margin="0,1,8,1"
                                     Background="{StaticResource Warn}"/>
-                            <TextBlock Text="MSVDD · 交换网络 / 内存接口" Style="{StaticResource SectionTitle}"/>
+                            <TextBlock Text="MSVDD" Style="{StaticResource SectionTitle}"/>
                         </StackPanel>
 
                         <Grid Margin="0,10,0,0">
@@ -691,21 +675,6 @@
                                        Foreground="{StaticResource TextMuted}" Text="上限 —"/>
                         </Grid>
 
-                        <TextBlock Style="{StaticResource RowLabel}" Margin="0,12,0,0" TextTrimming="CharacterEllipsis"
-                                   Text="XBAR 电压偏移 · 核心-显存的交换网络" ToolTip="XBAR 是 GPU 内部把核心和显存连起来的交换网络，进出显存的数据都经过它，它跑在 MSVDD 供电的域上。&#10;这一项给这块网络请求更多或更少的电压：升压让更高的 XBAR 频率更稳，降压可在原频率下省电。&#10;它可能与其它模块共用供电，实际电压不一定完全跟随请求。范围 -25…+50 mV。"/>
-                        <Slider x:Name="XbarSlider" Minimum="-25" Maximum="50" Value="0"
-                                TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0"
-                                ValueChanged="OnXbarSliderChanged"/>
-                        <Grid Margin="0,2,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" x:Name="XbarOffsetLabel" Style="{StaticResource Caption}"
-                                       Foreground="{StaticResource TextMuted}" Text="待下发 0 mV"/>
-                            <TextBlock Grid.Column="1" x:Name="XbarAllowedLabel" Style="{StaticResource Caption}"
-                                       Text="允许 -25–50 mV"/>
-                        </Grid>
 
                         <!-- 清零/应用 act on the whole card, so they stay together on the left;
                              打开 mVolt+ is a way out to another program and sits apart on the

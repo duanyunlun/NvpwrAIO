@@ -327,7 +327,6 @@ namespace NvpwrControl
 			Tip(MsvddVoltNow, "MSVDD 轨实时电压，来源是 HWiNFO 的共享内存。\n公开的 NVAPI 接口里没有这条轨的实测值 —— 项目文档明确写了不声称能读到它 —— 所以这里借用 HWiNFO 的传感器读数；HWiNFO 没运行时显示 —。");
 			Tip(MsvddLimitsNow, "MSVDD 当前**实际生效**的电压上下限，从 mVolt+ 回读。\n这是电压策略值，不是实测电压；实测值看左边。");
 			Tip(VoltLimitsNow, "当前**实际生效**的电压上下限，从 mVolt+ 回读，不是待下发的值。\n下限 = 出厂下限 + VMIN 偏移；上限 = min(REL, ALT/OP, OV) 的评估结果。\n拖动滑块不会改变这里 —— 只有点“应用”并回读成功后才更新。\n注意这是电压策略值，不是实测电压；实测值看左边的“核心电压”。");
-			Tip(VoltOffsetLabel, "待下发的核心电压需求偏移，范围 " + text + "。\n点“应用”后由 mVolt+ 写入，随后本程序回读确认。");
 			Tip(ClkCore, "核心频率偏移，单位 MHz。\n合法范围标在输入框两侧，超出会被拒绝，不会下发给驱动。");
 			Tip(ClkMem, "显存频率偏移，单位 MHz。\n与核心偏移独立；显存超频过高通常表现为画面异常而不是死机。");
 			Tip(ClkNow, "核心频率实时读数（NVML）。\n空闲时会大幅降频，这是正常的省电行为，不是被限制。");
@@ -791,8 +790,6 @@ namespace NvpwrControl
 		{
 			_mvoltPath = MVolt.Find(_state.MvoltPath);
 			_mvoltReady = !string.IsNullOrEmpty(_mvoltPath) && File.Exists(_mvoltPath);
-			VoltSlider.IsEnabled = _mvoltReady;
-			XbarSlider.IsEnabled = _mvoltReady;
 			NvvddRange.IsEnabled = _mvoltReady;
 			MsvddRange.IsEnabled = _mvoltReady;
 			MVoltSnapshot mVoltSnapshot = MVolt.QueryStatus(_state.MvoltPath);
@@ -1313,11 +1310,8 @@ private static string Fmt(double v, string unit)
 		/// The maximum is written from the ceiling rather than from REL, since the ceiling is what
 		/// that control represents; REL alone would show the baseline whenever OV is doing the work.
 		/// </summary>
-		private void UpdateVoltOffsetLabel()
+		private void UpdateVoltageControls()
 		{
-			SetSlider(VoltSlider, VoltOffsetLabel, _voltOffsetMv);
-			SetSlider(XbarSlider, XbarOffsetLabel, _xbarOffsetMv);
-
 			/*
 				The range controls are written from the offsets, not the other way round: the
 				offsets are the record, and the absolute voltages are derived from them plus the
@@ -1425,24 +1419,6 @@ private static string Fmt(double v, string unit)
 			return ((mv > 0) ? "+" : "") + mv + " mV";
 		}
 
-		private void OnVoltSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-		{
-			_voltOffsetMv = (int)Math.Round(e.NewValue);
-			if (VoltOffsetLabel != null)
-			{
-				VoltOffsetLabel.Text = _voltOffsetMv + " mV";
-			}
-		}
-
-		private void OnXbarSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-		{
-			_xbarOffsetMv = (int)Math.Round(e.NewValue);
-			if (XbarOffsetLabel != null)
-			{
-				XbarOffsetLabel.Text = _xbarOffsetMv + " mV";
-			}
-		}
-
 		/// <summary>
 		/// Set while one handler writes into the other's slider. WPF raises ValueChanged for a
 		/// programmatic assignment just as it does for a drag, so without this the two controls
@@ -1542,7 +1518,7 @@ private static string Fmt(double v, string unit)
 			_msvddRelOffsetMv = 0;
 			_msvddAltOffsetMv = 0;
 			_msvddOvOffsetMv = 0;
-			UpdateVoltOffsetLabel();
+			UpdateVoltageControls();
 		}
 
 		private void OnApplyVoltage(object sender, RoutedEventArgs e)
@@ -1586,14 +1562,12 @@ private static string Fmt(double v, string unit)
 				lost its slider. Printing them made the dialog describe controls that do not exist.
 			*/
 			string text =
-				"NVVDD（核心供电轨）\r\n" +
+				"NVVDD\r\n" +
 				"  最低电压 VMIN    " + Signed(_vminOffsetMv) + "\r\n" +
 				"  最高电压 REL/ALT " + Signed(_relOffsetMv) + "\r\n" +
-				"  核心电压请求     " + Signed(_voltOffsetMv) + "\r\n" +
-				"MSVDD（交换网络 / 内存接口）\r\n" +
+				"MSVDD\r\n" +
 				"  最低电压 VMIN    " + Signed(_msvddVminOffsetMv) + "\r\n" +
-				"  最高电压 REL/ALT " + Signed(_msvddRelOffsetMv) + "\r\n" +
-				"  XBAR 电压请求    " + Signed(_xbarOffsetMv);
+				"  最高电压 REL/ALT " + Signed(_msvddRelOffsetMv);
 			string warning =
 				"电压修改可能导致显卡不稳定、驱动重置，\r\n" +
 				"极端情况会损坏供电轨。\r\n" +
@@ -1733,7 +1707,7 @@ private static string Fmt(double v, string unit)
 		private void PushStateToControls()
 		{
 			ShowPowerTarget();
-			UpdateVoltOffsetLabel();
+			UpdateVoltageControls();
 			ClkCore.Text = _state.Clock.CoreOffsetMhz.ToString(CultureInfo.InvariantCulture);
 			ClkMem.Text = _state.Clock.MemoryOffsetMhz.ToString(CultureInfo.InvariantCulture);
 			ClkXbar.Text = _state.Clock.XbarOffsetMhz.ToString(CultureInfo.InvariantCulture);
