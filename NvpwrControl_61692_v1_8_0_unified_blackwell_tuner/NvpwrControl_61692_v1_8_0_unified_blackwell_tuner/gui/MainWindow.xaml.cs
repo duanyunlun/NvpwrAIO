@@ -247,6 +247,31 @@ namespace NvpwrControl
 			DateTime boot = DateTime.Now - TimeSpan.FromMilliseconds(Environment.TickCount64);
 			long stamp = boot.Ticks;
 
+			/*
+				The registry record first, and NOT inside the driver query.
+
+				It used to be nested in there, which defeated the point of having a record: on a
+				machine whose driver was not loaded — the case where the information is hardest to
+				get — the lookup was skipped and the function fell through to its last-resort
+				return, showing 350 W. That number is the kernel module's compile-time ceiling, a
+				limit on what may be REQUESTED, and it has nothing to do with what the card shipped
+				with. It pinned the whole power row at 350 and made the controls useless.
+
+				A record exists so the answer does not have to be re-derived. Reading it must not
+				require the thing it replaces.
+			*/
+			uint hint = (_state.PowerFloorProfile != 0) ? _state.PowerFloorProfile : _state.Profile;
+			if (hint != 0)
+			{
+				int fromRecord;
+				if (FactoryWall.TryRead(hint, out fromRecord))
+				{
+					_state.PowerFloorW = fromRecord;
+					_state.PowerFloorProfile = hint;
+					return fromRecord;
+				}
+			}
+
 			if (Driver.QueryStatus(out var status, out var _))
 			{
 				/*
@@ -257,90 +282,68 @@ namespace NvpwrControl
 					record the other cannot find. The driver reports ActiveProfile as 0 until its
 					policy has been armed, so at boot it is the less reliable of the two, and it once
 					had the service logging profile 0 while this side logged 3 for the same card on
-					the same boot. The stored number is stable for the whole session.
-
-					status.ActiveProfile is only the fallback for a first run with no state.
+					the same boot.
 				*/
 				uint profile = (_state.Profile != 0) ? _state.Profile : status.ActiveProfile;
-				if (profile == 0)
+				if (profile != 0)
 				{
-					return 350;
-				}
-
-				/*
-					The registry record comes first, and a hit ends the search.
-
-					This is a property of the CARD, so it lives somewhere a card property belongs
-					rather than in the state file — which belongs to the last tuning session and is
-					rewritten by every slot save, undo and restore-defaults. A fact that must never
-					change should not live in the file that changes most.
-
-					Keying by profile is the only thing that may invalidate the record: a different
-					profile means different hardware or a different VBIOS. Nothing else rewrites it —
-					not a live reading, not a restart, not the ceiling having moved.
-				*/
-				int recorded;
-				if (FactoryWall.TryRead(profile, out recorded))
-				{
-					_state.PowerFloorW = recorded;
-					_state.PowerFloorProfile = profile;
-					return recorded;
-				}
-
-				/*
-					Only record it while the wall is demonstrably untouched.
-
-					At a boot the display driver has just reset the wall, so it equals the
-					profile's minimum. A wall above that has been raised since the last reload —
-					which is the case when this runs mid-session, or after a deploy unloaded the
-					helper while the ceiling was up. Writing that number down would poison the
-					record permanently, and the record is exactly the thing that cannot be
-					corrected afterwards. Better to leave it empty and let the next boot fill it.
-				*/
-				bool wallLooksStock = status.SupportedMin == 0 || status.OemBaseline <= status.SupportedMin;
-				if (wallLooksStock && status.OemBaseline != 0)
-				{
-					int fromDriver = (int)(status.OemBaseline / 1000);
-					if (fromDriver > 0)
+					int fromRecord;
+					if (FactoryWall.TryRead(profile, out fromRecord))
 					{
-						_state.PowerFloorW = fromDriver;
+						_state.PowerFloorW = fromRecord;
 						_state.PowerFloorProfile = profile;
-						_state.PowerFloorBoot = stamp;
-						SaveState();
-						FactoryWall.Write(profile, fromDriver);
-						Store.Log("出厂功耗墙已记录: " + fromDriver + " W（驱动 OemBaseline，profile " +
-								  profile + "，已写入注册表 HKLM\\SOFTWARE\\NvpwrControl，" +
-								  "建立于 " + boot.ToString("MM-dd HH:mm:ss") + "）");
-						return fromDriver;
+						return fromRecord;
 					}
-				}
-				else if (status.OemBaseline != 0)
-				{
-					Store.Log("出厂功耗墙暂不记录: 当前墙 " + (status.OemBaseline / 1000) +
-							  " W 高于出厂值 " + (status.SupportedMin / 1000) +
-							  " W，重启后会自动记录");
+
+					/*
+						Only record it while the wall is demonstrably untouched.
+
+						At a boot the display driver has just reset the wall, so it equals the
+						profile's minimum. A wall above that has been raised since the last reload —
+						which is the case when this runs mid-session, or after a deploy unloaded the
+						helper while the ceiling was up. Writing that number down would poison the
+						record permanently, and the record is exactly the thing that cannot be
+						corrected afterwards.
+					*/
+					bool wallLooksStock = status.SupportedMin == 0 || status.OemBaseline <= status.SupportedMin;
+					if (wallLooksStock && status.OemBaseline != 0)
+					{
+						int fromDriver = (int)(status.OemBaseline / 1000);
+						if (fromDriver > 0)
+						{
+							_state.PowerFloorW = fromDriver;
+							_state.PowerFloorProfile = profile;
+							_state.PowerFloorBoot = stamp;
+							SaveState();
+							FactoryWall.Write(profile, fromDriver);
+							Store.Log("出厂功耗墙已记录: " + fromDriver + " W（驱动 OemBaseline，profile " +
+									  profile + "，已写入注册表 HKLM\\SOFTWARE\\NvpwrControl，" +
+									  "建立于 " + boot.ToString("MM-dd HH:mm:ss") + "）");
+							return fromDriver;
+						}
+					}
+					else if (status.OemBaseline != 0)
+					{
+						Store.Log("出厂功耗墙暂不记录: 当前墙 " + (status.OemBaseline / 1000) +
+								  " W 高于出厂值 " + (status.SupportedMin / 1000) +
+								  " W。点「重读功耗墙」会重置显卡设备，之后即可正确读取");
+					}
 				}
 			}
 
 			/*
-				Nothing is recorded here, and nothing may be.
+				Unknown, and it stays unknown.
 
-				There used to be an NVML fallback that read the enforced limit when the driver had
-				no baseline to offer. That fallback is what kept poisoning this record: the enforced
-				limit is the wall RIGHT NOW, not the one the card shipped with, so on any run where
-				the ceiling had already been raised it wrote the raised value down as factory. That
-				is how the record came to say 250 W while the machine's real wall is 175 W — twice,
-				on separate days, each time after a deploy had reloaded the driver while the ceiling
-				was up.
+				There used to be an NVML fallback here as well, which read the enforced limit — the
+				wall RIGHT NOW rather than the one the card shipped with, so on any run where the
+				ceiling had already been raised it wrote the raised value down as factory. That is
+				how this record came to say 250 W while the machine's real wall is 175 W.
 
-				A missing record costs nothing: the display falls back to a live reading and the next
-				boot fills the record in properly. A wrong record costs everything, because the whole
-				point of a record is that nothing later can tell it is wrong.
-
-				So: the driver's OemBaseline, and only that. A baseline of zero means "not knowable
-				yet", not "try something else".
+				Zero means "not knowable yet". The card shows a dash, the power row falls back to
+				the profile's own window, and the record stays empty until something can fill it
+				correctly — a reboot, or the reset button.
 			*/
-			return 350;
+			return 0;
 		}
 
 		private void ApplyTooltips()
@@ -492,7 +495,7 @@ namespace NvpwrControl
 				EnvSample envSample = Telemetry.Sample();
 				_targetW = ((envSample.HasPowerLimit && envSample.EnforcedLimitW > 0.0) ? ((int)Math.Round(envSample.EnforcedLimitW)) : _powerFloorW);
 			}
-			if (_targetW < _powerFloorW)
+			if (_powerFloorW > 0 && _targetW < _powerFloorW)
 			{
 				_targetW = _powerFloorW;
 			}
@@ -534,12 +537,26 @@ namespace NvpwrControl
 				"申请值 ≠ 生效值：驱动可能因为机型策略、温度或供电压到更低，真实值看左边的「当前上限」。",
 				25, loMw / 1000, hiMw / 1000));
 			PwMaxLabel.Text = hiMw / 1000 + " W";
-			Tip(PwFloorLabel, _powerFloorW + " W —— 这是从机器读取的出厂功耗墙，也就是这张卡的默认功率。\n内核模块的 OemBaseline 优先，读不到时用 NVML 的生效上限。\n它不是固定数字：不同机型/不同 VBIOS 会不一样。");
-			Tip(PwFloorLabel, _powerFloorW + "（W）—— 出厂功耗墙，也就是这张卡的默认功率。\n再往下调没有意义：下限就到这里，减号会停住。\n（内核模块允许的最小申请值是 " + loMw / 1000 + " W，但那张卡的实际功耗墙是 " + _powerFloorW + " W。）");
-			Tip(PwMaxLabel, string.Format(CultureInfo.InvariantCulture, "本机型策略窗口的上限：{0} W。\n高于此值申请会被内核模块拒绝。\n这是内核模块编译时写死的上限，无法通过界面突破。", hiMw / 1000));
-			PwFloorLabel.Text = _powerFloorW + " W";
-			PwFloorRef.Text = _powerFloorW + " W";
-			Tip(PwFloorRef, _powerFloorW + " W —— 本行可调范围的下端，也就是这张卡的默认功率。\n点减号不会低于这里：再往下没有意义，那是这张卡的设计功率。");
+			/*
+				The floor is shown as a dash when it is not known.
+
+				It used to print whatever the function returned, and the function's last resort was
+				350 — the module's compile-time ceiling, which is not a factory wall and pinned the
+				whole row at that value. An unknown wall now reads as unknown, and the button beside
+				it is how you make it known.
+			*/
+			string floorText = (_powerFloorW > 0) ? (_powerFloorW + " W") : "—";
+			PwFloorLabel.Text = floorText;
+			PwFloorRef.Text = floorText;
+			Tip(PwFloorLabel, (_powerFloorW > 0)
+				? (_powerFloorW + " W —— 出厂功耗墙，这张卡的默认功率。\n"
+				   + "只读取一次并写入注册表 HKLM\\SOFTWARE\\NvpwrControl，之后永远从这个记录读，不再重新推导。\n"
+				   + "只有换显卡（型号变化）才会重新记录。")
+				: "出厂功耗墙尚未记录。\n它在「显卡刚重置过」的那一刻才可确定 —— 那时功耗墙必定是出厂值。\n"
+				  + "点右边的「重读功耗墙」会重置显卡设备，然后重新读取并记入注册表。");
+			Tip(PwFloorRef, (_powerFloorW > 0)
+				? (_powerFloorW + " W —— 本行可调范围的下端，也就是这张卡的默认功率。\n再往下没有意义：那是这张卡的设计功率。")
+				: "出厂功耗墙未知，本行暂时以机型策略窗口的下端为准。\n点「重读功耗墙」可重置设备并重新读取。");
 			TuningState tuningState = Tuning.Query();
 			if (!tuningState.CoreOk && !tuningState.MemoryOk && !tuningState.XbarOk)
 			{
@@ -995,7 +1012,9 @@ private static string Fmt(double v, string unit)
 			Driver.ProfileRange(_profile, ceiling, out loMw, out hiMw);
 			lo = (int)(loMw / 1000);
 			hi = (int)(hiMw / 1000);
-			if (lo < _powerFloorW) lo = _powerFloorW;
+			// 出厂墙未知（记录还没建立）时不抬高下限：那时用机型策略窗口自己的下端，
+			// 否则 0 会把下限压成 0，整行都变成不可用。
+			if (_powerFloorW > 0 && lo < _powerFloorW) lo = _powerFloorW;
 			if (hi < lo) hi = lo;
 		}
 
@@ -1104,6 +1123,98 @@ private static string Fmt(double v, string unit)
 			_targetW = _powerFloorW;
 			PwHint.Text = "";
 			ShowPowerTarget();
+		}
+
+		/// <summary>
+		/// Re-reads the factory power wall by resetting the GPU first.
+		///
+		/// WHY a reset is part of this. The wall is only knowable at the moment the display
+		/// driver has just reloaded, because that is when it has been put back to the value the
+		/// card shipped with. At any other time the live reading is the wall RIGHT NOW, which may
+		/// be one this program raised — recording that would file a raised ceiling as factory, and
+		/// the record is the one thing nothing later can correct. So the button does not merely
+		/// re-read: it makes the reading valid first.
+		///
+		/// The device reset blanks the screen for a few seconds, which is why it is behind a
+		/// confirmation rather than done silently.
+		/// </summary>
+		private void OnRereadPowerFloor(object sender, RoutedEventArgs e)
+		{
+			if (!Confirm("重读出厂功耗墙？\r\n\r\n" +
+						 "这会重置 NVIDIA 显卡设备，屏幕会黑几秒。\r\n\r\n" +
+						 "为什么要重置：只有显卡刚被重置的那一刻，功耗墙才必定是出厂值。\r\n" +
+						 "平时读到的是「当前」的墙，它可能已经被本程序抬高过 —— 把它当出厂值\r\n" +
+						 "会把记录写坏，而记录是唯一无法事后纠正的东西。\r\n\r\n" +
+						 "重置后本程序会重新读取并写入注册表，之后一直从那里读。"))
+			{
+				return;
+			}
+
+			SuspendRefresh();
+			try
+			{
+				string error;
+				int before = GpuDevice.CurrentWallW();
+				Store.Log("重读功耗墙: 重置显卡设备（重置前墙 " + before + " W）");
+
+				if (!GpuDevice.Restart(out error))
+				{
+					Warn("重置显卡设备失败：\r\n" + error);
+					return;
+				}
+
+				/*
+					设备重置会丢掉驱动的运行期状态，包括它自己持有的基线。所以这里要把
+					驱动上下文重新建立起来 —— 关 DSE、装载服务、等设备就绪。
+
+					传 0 是有意的：重置刚刚已经做过了，这里只要重建，不要再让它判断一次
+					该不该重置。
+				*/
+				if (!UnlockChain.EnsureLoaded(0, out error))
+				{
+					Warn("设备已重置，但驱动上下文没能重新建立：\r\n" + error);
+					return;
+				}
+
+				if (!Driver.QueryStatus(out var status, out error))
+				{
+					Warn("设备已重置，但读不到驱动状态：\r\n" + error);
+					return;
+				}
+
+				uint profile = (_state.Profile != 0) ? _state.Profile : status.ActiveProfile;
+				if (profile == 0)
+				{
+					Warn("读不到显卡型号，无法把功耗墙归档。");
+					return;
+				}
+
+				int floorW = (int)(status.OemBaseline / 1000);
+				if (floorW <= 0)
+				{
+					Warn("重置后驱动仍报告基线为 0，说明它还没有完全初始化。\r\n稍等几秒再点一次。");
+					return;
+				}
+
+				FactoryWall.Write(profile, floorW);
+				_state.PowerFloorW = floorW;
+				_state.PowerFloorProfile = profile;
+				_state.PowerFloorBoot =
+					(DateTime.Now - TimeSpan.FromMilliseconds(Environment.TickCount64)).Ticks;
+				SaveState();
+
+				int after = GpuDevice.CurrentWallW();
+				Store.Log("重读功耗墙: 记录 " + floorW + " W（profile " + profile +
+						  "，重置前 " + before + " W，重置后生效 " + after +
+						  " W）已写入注册表");
+
+				RefreshAll(logIt: false);
+				ActionHint.Text = "出厂功耗墙已记录为 " + floorW + " W。";
+			}
+			finally
+			{
+				ResumeRefresh();
+			}
 		}
 
 		private void OnApplyPower(object sender, RoutedEventArgs e)

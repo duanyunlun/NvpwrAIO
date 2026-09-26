@@ -299,6 +299,14 @@
                                 <TextBlock x:Name="PwFloorLabel" Style="{StaticResource BigSub}"
                                            Foreground="{StaticResource Accent}" FontWeight="Bold"
                                            VerticalAlignment="Center" Margin="5,0,0,0" Text="—"/>
+                                <!--
+                                    出厂功耗墙只有在「显卡刚被重置」的那一刻才能确定 —— 那时它必定是
+                                    出厂值。除此之外读到的都可能是被本程序抬升过的当前值，不能拿来
+                                    当基线。所以这个按钮做的是重置设备 + 重读，而不是只重读。
+                                -->
+                                <Button x:Name="PwFloorReread" Content="重读功耗墙"
+                                        Style="{StaticResource BtnGhost}" Padding="7,3" Margin="9,0,0,0"
+                                        FontSize="11" Click="OnRereadPowerFloor"/>
                             </StackPanel>
                         </Grid>
 
