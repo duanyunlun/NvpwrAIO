@@ -62,7 +62,11 @@ identity and six machine-code signatures before it touches anything, and returns
 | PE timestamp | `0x6A9B4070` |
 | SizeOfImage | `0x06D3E000` |
 
-**It will refuse to run on any other driver version, by design.** Porting it to a new driver is
+**It will refuse to run on any other driver version, by design.** Run `NvpwrCtl.exe diagnose` first in
+that case — it prints the actual PE identity, whether it matched a table entry, and if so
+**which signature failed and at which RVA**.
+
+ Porting it to a new driver is
 a reverse-engineering task with a known checklist — see
 [docs/PORTING_TO_A_NEW_DRIVER.md](docs/PORTING_TO_A_NEW_DRIVER.md).
 

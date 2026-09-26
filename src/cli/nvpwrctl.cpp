@@ -18,6 +18,107 @@ static const char* StateName(ULONG s)
     default: return "UNKNOWN";
     }
 }
+/*
+    签名序号 -> 名字。顺序同 driver\target.h 的 NVPWR_SIG_ID。
+*/
+static const char* SigName(ULONG i)
+{
+    switch (i) {
+    case 0: return "GpuReg";
+    case 1: return "UpperLd";
+    case 2: return "F7Rec";
+    case 3: return "BoardSet";
+    case 4: return "SetAmt";
+    case 5: return "SetElig";
+    default: return "?";
+    }
+}
+
+static unsigned long CountBits(ULONG v)
+{
+    unsigned long n = 0;
+    while (v) { n += (v & 1u); v >>= 1; }
+    return n;
+}
+
+
+/*
+    Detail 的人类可读名字。
+
+    值是驱动 NVPWR_DETAIL 枚举的顺序，和 shared\nvpwr_ioctl.h 里一致。移植时这张
+    表就是"失败在哪一步"的答案：1 和 2 是构建校验（PE 标识 / 机器码签名），3 到 13
+    是逐级解析对象，14 是最终验证。前两个意味着驱动版本不对，后面的意味着版本对了
+    但结构或语义变了。
+*/
+static const char* DetailName(ULONG d)
+{
+    switch (d) {
+    case 0:  return "OK";
+    case 1:  return "PE_IDENTITY (driver build not in table)";
+    case 2:  return "CODE_SIGNATURE (RVA or signature wrong)";
+    case 3:  return "GLOBAL_POINTER";
+    case 4:  return "GPU_TABLE";
+    case 5:  return "MAJOR_OBJECT";
+    case 6:  return "POWER_ROOT";
+    case 7:  return "LOOKUP_FUNCTION";
+    case 8:  return "BOARD_OBJECT";
+    case 9:  return "BOARD_HANDLER";
+    case 10: return "SELECTOR2_LAYOUT";
+    case 11: return "SELECTOR3_F7";
+    case 12: return "TEST_STATE";
+    case 13: return "BOARD_SET";
+    case 14: return "VERIFY";
+    case 15: return "TARGET_RANGE";
+    default: return "UNKNOWN";
+    }
+}
+
+/*
+    只读诊断。可以在一个不受支持的驱动上安全调用 —— 它不写任何东西。
+
+    典型用法：升级显卡驱动之后 status 说"不支持的驱动版本"，跑这个就能看到实际
+    的 PE 标识，以及（如果这个构建已经被加进表里）哪一条签名没匹配、在哪个 RVA。
+*/
+static bool ShowDiagnosis(HANDLE h)
+{
+    NVPWR_DIAGNOSIS d{};
+    DWORD got = 0;
+    if (!DeviceIoControl(h, IOCTL_NVPWR_DIAGNOSE, nullptr, 0, &d, sizeof(d), &got, nullptr) || got < sizeof(d)) {
+        std::printf("DIAGNOSE failed: Win32=%lu bytes=%lu\n", GetLastError(), got);
+        return false;
+    }
+
+    std::printf("Protocol version     : %lu\n", d.Version);
+    std::printf("Actual timestamp     : 0x%08lX\n", d.TimeDateStamp);
+    std::printf("Actual SizeOfImage   : 0x%08lX\n", d.SizeOfImage);
+    std::printf("Module size          : 0x%08lX\n", d.ModuleSize);
+    std::printf("Known targets        : %lu\n", d.TargetCount);
+
+    if (d.TargetIndex == 0xFFFFFFFFu) {
+        std::printf("Matched target       : NONE\n");
+        std::printf("\n");
+        std::printf("This build is not in the supported table. To add it, see\n");
+        std::printf("docs/PORTING_TO_A_NEW_DRIVER.md. The two numbers it needs first\n");
+        std::printf("are printed above as Actual timestamp / Actual SizeOfImage.\n");
+        return true;
+    }
+
+    std::printf("Matched target       : %s (index %lu)\n", d.TargetName, d.TargetIndex);
+    std::printf("Expected timestamp   : 0x%08lX\n", d.ExpectedTimeDateStamp);
+    std::printf("Expected SizeOfImage : 0x%08lX\n", d.ExpectedSizeOfImage);
+    std::printf("Signature mask       : 0x%02lX of 0x%02lX (%lu of %lu matched)\n",
+        d.SigMask, (d.SigCount >= 32 ? 0xFFFFFFFFu : ((1u << d.SigCount) - 1u)),
+        (unsigned long)CountBits(d.SigMask), (unsigned long)d.SigCount);
+    std::printf("\n");
+    std::printf("Per-signature (a mismatch means that RVA is wrong for this build):\n");
+    for (ULONG i = 0; i < d.SigCount && i < NVPWR_DIAG_SIG_MAX; ++i) {
+        const bool ok = (d.SigMask & (1u << i)) != 0;
+        std::printf("  [%lu] %-8s RVA 0x%08lX len %-3lu %s\n",
+            (unsigned long)i, SigName(i), d.SigRva[i], d.SigLen[i],
+            ok ? "ok" : "MISMATCH");
+    }
+    return true;
+}
 
 static ULONG ParseProfile(const wchar_t* s)
 {
@@ -95,7 +196,7 @@ static bool ShowStatus(HANDLE h)
     }
 
     std::printf("State                : %s (%lu)\n", StateName(s.State), s.State);
-    std::printf("Detail               : %lu\n", s.Detail);
+    std::printf("Detail               : %lu  %s\n", s.Detail, DetailName(s.Detail));
     std::printf("Last NTSTATUS        : 0x%08lX\n", (unsigned long)s.LastNtStatus);
     std::printf("Last NVIDIA status   : 0x%08lX\n", s.LastNvStatus);
     std::printf("TimeDateStamp        : 0x%08lX\n", s.TimeDateStamp);
@@ -126,7 +227,7 @@ static bool ShowStatus(HANDLE h)
 int wmain(int argc, wchar_t** argv)
 {
     if (argc < 2 || argc > 4) {
-        std::printf("Usage: NvpwrCtl status | set <4050|4060|4070|4080|4090|5050|5060|5070|5070ti|5080|5090> <watts> | restore\n");
+        std::printf("Usage: NvpwrCtl status | diagnose | set <4050|4060|4070|4080|4090|5050|5060|5070|5070ti|5080|5090> <watts> | restore\n");
         return 2;
     }
 
@@ -138,7 +239,9 @@ int wmain(int argc, wchar_t** argv)
     }
 
     int rc = 0;
-    if (_wcsicmp(argv[1], L"status") == 0 && argc == 2) {
+    if (_wcsicmp(argv[1], L"diagnose") == 0 && argc == 2) {
+        rc = ShowDiagnosis(h) ? 0 : 5;
+    } else if (_wcsicmp(argv[1], L"status") == 0 && argc == 2) {
         rc = ShowStatus(h) ? 0 : 4;
     } else if (_wcsicmp(argv[1], L"restore") == 0 && argc == 2) {
         DWORD got = 0;
@@ -188,7 +291,7 @@ int wmain(int argc, wchar_t** argv)
         }
         ShowStatus(h);
     } else {
-        std::printf("Usage: NvpwrCtl status | set <4050|4060|4070|4080|4090|5050|5060|5070|5070ti|5080|5090> <watts> | restore\n");
+        std::printf("Usage: NvpwrCtl status | diagnose | set <4050|4060|4070|4080|4090|5050|5060|5070|5070ti|5080|5090> <watts> | restore\n");
         rc = 2;
     }
 

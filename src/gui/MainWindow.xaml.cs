@@ -769,6 +769,40 @@ namespace NvpwrControl
 				ActionHint.Text = text;
 				break;
 			}
+			/*
+				构建校验失败时，把驱动知道的细节展开。
+
+				在此之前这里只有一句"不支持的 NVIDIA 驱动版本" —— 而驱动其实知道是 PE
+				标识不匹配还是机器码签名不匹配，也知道是在哪一级解析上停下来的。这两种
+				情况的修法完全不同：前者要去 target.h 加表项，后者说明表项里某个 RVA
+				抄错了，而移植文档里对应的章节也不一样。
+
+				只在"构建不对"这一类状态上做诊断。它会多发一个 IOCTL，而正常运行时
+				永远不会有新信息，所以不值得每秒都问。
+			*/
+			if (status.State == Driver.StateWrongBuild ||
+				status.State == Driver.StateContextInvalid ||
+				status.State == Driver.StatePreconditionNotReady)
+			{
+				Driver.Diagnosis diag;
+				string derr;
+				if (Driver.Diagnose(out diag, out derr))
+				{
+					string line = Driver.DescribeDiagnosis(diag);
+					Tip(ActionHint, text + "\n\n" + Driver.DetailText(status.Detail) +
+									 "\n\n" + line +
+									 "\n\n移植方法见 docs/PORTING_TO_A_NEW_DRIVER.md。");
+					if (logIt)
+					{
+						Store.Log("构建诊断: detail=" + status.Detail + " —— " +
+								  Driver.DetailText(status.Detail) + "  |  " + line);
+					}
+				}
+				else if (logIt)
+				{
+					Store.Log("构建诊断失败: " + derr);
+				}
+			}
 			if (status.ActiveProfile != 0)
 			{
 				_profile = status.ActiveProfile;

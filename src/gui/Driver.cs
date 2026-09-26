@@ -26,6 +26,11 @@ namespace NvpwrControl
         public static readonly uint IOCTL_STATUS = Ctl(0x800, FILE_READ_ACCESS);
         public static readonly uint IOCTL_SET_POWER = Ctl(0x801, FILE_READ_ACCESS | FILE_WRITE_ACCESS);
         public static readonly uint IOCTL_RESTORE = Ctl(0x802, FILE_READ_ACCESS | FILE_WRITE_ACCESS);
+        /// <summary>
+        /// Read-only build diagnosis. Works even on a driver this build does not
+        /// support, which is the case it exists for — see Diagnose().
+        /// </summary>
+        public static readonly uint IOCTL_DIAGNOSE = Ctl(0x803, FILE_READ_ACCESS);
 
         private static uint Ctl(uint function, uint access)
         {
@@ -43,6 +48,42 @@ namespace NvpwrControl
             public uint Profile;
             public uint MaxMilliwatts;
             public uint Reserved;
+        }
+
+        /// <summary>
+        /// Mirrors NVPWR_DIAGNOSIS in shared/nvpwr_ioctl.h. Field order and the
+        /// following array sizes must stay identical or the marshalling silently
+        /// shifts every field after the first difference.
+        /// </summary>
+        [StructLayout(LayoutKind.Sequential, Pack = 8, CharSet = CharSet.Ansi)]
+        public struct Diagnosis
+        {
+            public const int SigMax = 8;
+
+            public uint Version;
+
+            public uint TimeDateStamp;
+            public uint SizeOfImage;
+            public uint ModuleSize;
+
+            public uint TargetIndex;
+            public uint TargetCount;
+
+            public uint ExpectedTimeDateStamp;
+            public uint ExpectedSizeOfImage;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 16)]
+            public string TargetName;
+
+            public uint SigMask;
+            public uint SigCount;
+
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = SigMax)]
+            public uint[] SigRva;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = SigMax)]
+            public uint[] SigLen;
+
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] Reserved;
         }
 
         [StructLayout(LayoutKind.Sequential, Pack = 8)]
@@ -259,6 +300,134 @@ namespace NvpwrControl
             {
                 Marshal.FreeHGlobal(buf);
                 CloseHandle(h);
+            }
+        }
+
+        /// <summary>
+        /// Read-only build diagnosis.
+        ///
+        /// This is the answer to the situation status alone cannot describe. When the
+        /// driver reports 不支持的 NVIDIA 驱动版本, all the user-mode side knows is that
+        /// something about the build did not match. The driver knows exactly what: the
+        /// PE identity it read, whether it matched a table entry, and if so which of the
+        /// six machine-code signatures failed and at which RVA.
+        ///
+        /// Unlike QueryStatus this does not go through the resolving path, so it still
+        /// answers on a build the driver does not support — which is precisely when it
+        /// is worth running. It writes nothing.
+        /// </summary>
+        public static bool Diagnose(out Diagnosis result, out string error)
+        {
+            result = new Diagnosis
+            {
+                SigRva = new uint[Diagnosis.SigMax],
+                SigLen = new uint[Diagnosis.SigMax],
+                Reserved = new uint[4]
+            };
+            error = null;
+
+            IntPtr h = Open();
+            if (h == new IntPtr(-1)) { error = "驱动未加载"; return false; }
+
+            int size = Marshal.SizeOf(typeof(Diagnosis));
+            IntPtr buf = Marshal.AllocHGlobal(size);
+            try
+            {
+                Marshal.StructureToPtr(result, buf, false);
+                uint returned;
+                if (!DeviceIoControl(h, IOCTL_DIAGNOSE, IntPtr.Zero, 0, buf, (uint)size, out returned, IntPtr.Zero))
+                {
+                    error = "诊断失败 (Win32 " + Marshal.GetLastWin32Error() + ")";
+                    return false;
+                }
+                result = (Diagnosis)Marshal.PtrToStructure(buf, typeof(Diagnosis));
+                return true;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buf);
+                CloseHandle(h);
+            }
+        }
+
+        /// <summary>
+        /// The driver's NVPWR_DETAIL value as a sentence.
+        ///
+        /// Values 1 and 2 are the ones that mean "this driver version is not supported
+        /// yet": a PE identity that is not in the table, or an RVA whose bytes are not
+        /// the expected machine code. Everything from 3 up means the build was
+        /// recognised and something about the object graph or its semantics moved —
+        /// which is a different repair and a different part of the porting document.
+        /// </summary>
+        public static string DetailText(uint detail)
+        {
+            switch (detail)
+            {
+                case 0: return "校验通过";
+                case 1: return "PE 标识不匹配 —— 这个驱动构建不在支持表里，需要移植";
+                case 2: return "机器码签名不匹配 —— RVA 或签名与实际不符，需要移植";
+                case 3: return "全局指针解析失败";
+                case 4: return "GPU 表结构不符";
+                case 5: return "主对象解析失败";
+                case 6: return "功率策略根对象不符";
+                case 7: return "查找函数不符";
+                case 8: return "board 对象解析失败";
+                case 9: return "board 处理函数不符";
+                case 10: return "selector2 布局不符";
+                case 11: return "selector3 / F7 语义不符";
+                case 12: return "测试状态异常";
+                case 13: return "board set 调用失败";
+                case 14: return "最终验证未通过";
+                case 15: return "目标值超出范围";
+                default: return "未知细节码 " + detail;
+            }
+        }
+
+        /// <summary>One line describing a diagnosis, for a log or the status bar.</summary>
+        public static string DescribeDiagnosis(Diagnosis d)
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            sb.Append("驱动构建 0x").Append(d.TimeDateStamp.ToString("X8"))
+              .Append("/0x").Append(d.SizeOfImage.ToString("X8"));
+
+            if (d.TargetIndex == 0xFFFFFFFFu)
+            {
+                sb.Append(" —— 不支持（支持表里有 ").Append(d.TargetCount).Append(" 项）");
+                return sb.ToString();
+            }
+
+            sb.Append(" —— 命中 ").Append(d.TargetName);
+            if (d.SigMask != ((1u << (int)d.SigCount) - 1u))
+            {
+                sb.Append("，但签名 ");
+                for (int i = 0; i < d.SigCount && i < Diagnosis.SigMax; i++)
+                {
+                    if ((d.SigMask & (1u << i)) == 0)
+                    {
+                        sb.Append(i).Append(" (").Append(SigName(i))
+                          .Append(" @RVA 0x").Append(d.SigRva[i].ToString("X8")).Append(") ");
+                    }
+                }
+                sb.Append("不匹配");
+            }
+            else
+            {
+                sb.Append("，签名全部匹配");
+            }
+            return sb.ToString();
+        }
+
+        public static string SigName(int i)
+        {
+            switch (i)
+            {
+                case 0: return "GpuRegistry";
+                case 1: return "UpperLoad";
+                case 2: return "F7Record";
+                case 3: return "BoardSet";
+                case 4: return "SetAmount";
+                case 5: return "SetElig";
+                default: return "?";
             }
         }
 

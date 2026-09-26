@@ -2,6 +2,7 @@
 #include <ntimage.h>
 #include <aux_klib.h>
 #include "..\\shared\\nvpwr_ioctl.h"
+#include "target.h"
 
 /*
     NVPWR 1.5.0 EXPERIMENTAL — REVIEW / DEBUG NOTES
@@ -47,42 +48,16 @@
 
 #define NVPWR_TAG 'RWPN'
 
-#define NVPWR_EXPECTED_TIMESTAMP 0x6A9B4070u
-#define NVPWR_EXPECTED_SIZE      0x06D3E000u
+/*
+    所有和具体 nvlddmkm 构建绑定的数字都在 target.h 里，按构建分组存放。
 
-#define RVA_GPU_GLOBAL           0x013B2E18u
-#define RVA_GPU_REGISTRY_FN      0x00107AC0u
-#define RVA_F7_GENERATOR         0x004E3EF0u
-#define RVA_F7_UPPER_LOAD        0x004E3FBFu
-#define RVA_F7_RECORD            0x004E4088u
-#define RVA_BOARD_TYPE0_SET      0x008D6960u
-#define RVA_SET_AMOUNT           0x004E4610u
-#define RVA_SET_ELIG             0x004E4680u
+    原先它们是这里的 32 个 #define，全文件 64 处直接引用；加一个驱动版本意味着改
+    32 行再核对 64 个引用点，而其中结构偏移写错了不会崩溃、只会写到错误的字节上。
+    现在是表驱动：移植 = 在 g_Targets[] 里加一个表项，这个文件一行都不用改。
 
-#define OFF_GLOBAL_GPU_TABLE     0x0208u
-#define OFF_TABLE_ENTRY_PTR      0x48A48u
-#define OFF_TABLE_ENTRY_GPUID    0x48A50u
-#define OFF_TABLE_COUNT          0x48C48u
-#define GPU_ENTRY_STRIDE         0x10u
-#define GPU_COUNT_MAX            32u
-
-#define OFF_MAJOR_POWER_ROOT     0x25B0u
-#define OFF_ROOT_REGISTRY        0x1CC0u
-#define OFF_ROOT_LOOKUP_FN       0x1CF8u
-#define OFF_ROOT_INIT            0x3D10u
-#define OFF_ROOT_ELIG            0x3D11u
-#define OFF_ROOT_AMOUNT_ACTIVE   0x3D12u
-#define OFF_ROOT_CTGP            0x3D14u
-#define OFF_ROOT_AMOUNT          0x3D18u
-#define OFF_ROOT_POLICY_KEY      0x3D1Cu
-#define OFF_ROOT_LOWER           0x3D20u
-#define OFF_ROOT_UPPER           0x3D24u
-#define OFF_ROOT_AUX28           0x3D28u
-#define OFF_ROOT_AUX2C           0x3D2Cu
-
-#define OFF_BOARD_SET_FN         0x2D0u
-#define OFF_SELECTOR2            0x104u
-#define OFF_SELECTOR3            0x1F4u
+    下面这组没有搬走，因为它们描述的是【语义】而不是位置 —— 槽位结构的字段含义
+    和功率范围不会随驱动构建变化。
+*/
 
 #define SLOT_MODE                0x00u
 #define SLOT_COUNT               0x01u
@@ -179,20 +154,15 @@
 #define POWER_OEM_MIN             75000u
 #define POWER_OEM_MAX             250000u
 
-static const UCHAR g_SigGpuRegistry[] = {
-    0x48,0x8B,0x05,0x51,0xB3,0x2A,0x01,0x44,0x8B,0xD9,0x4C,0x8B,0x88,0x08,0x02,0x00,0x00
-};
-static const UCHAR g_SigUpperLoad[] = { 0x44,0x8B,0x8B,0x24,0x3D,0x00,0x00 };
-static const UCHAR g_SigF7Record[] = { 0x66,0xC7,0x44,0x24,0x48,0xF7,0x03 };
-static const UCHAR g_SigBoardSet[] = {
-    0x48,0x89,0x5C,0x24,0x08,0x48,0x89,0x6C,0x24,0x10,0x48,0x89,0x74,0x24,0x18
-};
-static const UCHAR g_SigSetAmount[] = {
-    0x48,0x83,0xEC,0x38,0x48,0x8B,0x81,0xB0,0x25,0x00,0x00,0x44,0x8B,0xC2,0x80,0xB8,0x10,0x3D,0x00,0x00,0x00
-};
-static const UCHAR g_SigSetElig[] = {
-    0x48,0x83,0xEC,0x28,0x48,0x8B,0x81,0xB0,0x25,0x00,0x00,0x80,0xB8,0x10,0x3D,0x00,0x00,0x00
-};
+/*
+    当前生效的构建表项。由 ValidateBuild 按 PE 标识从 g_Targets[] 匹配后写入。
+
+    初值不是 NULL，而是第 0 项 —— 这是必须的：FillStatusFromContext 里有几处
+    (PUCHAR)Ctx->Board + g_T->Off[...] 的加法发生在 __try 之外，如果 g_T 为空，
+    那里会是一次真正的内核空指针解引用，而不是被 __try 捕获的异常。指向表里第一
+    项最坏情况是"用错误的偏移去读"，会被 __try 拦下；空指针不会。
+*/
+static const NVPWR_TARGET* g_T = &g_Targets[0];
 
 static PDEVICE_OBJECT g_DeviceObject = NULL;
 static UNICODE_STRING g_SymbolicLink;
@@ -248,6 +218,19 @@ typedef struct _NVPWR_CONTEXT {
     PFN_BOARD_SET BoardSet;
     PFN_SET_AMOUNT SetAmount;
     PFN_SET_ELIG SetEligibility;
+
+    /*
+        校验结果，留给诊断用。
+
+        TargetIndex 是命中的 g_Targets[] 下标，0xFFFFFFFF 表示没有任何表项匹配这个
+        PE 标识 —— 也就是"这个驱动版本还不支持"。
+        SigMask 的第 i 位表示第 i 条签名是否匹配（顺序同 NVPWR_SIG_ID）。
+
+        两者在失败时也是有效的，这正是诊断 IOCTL 能回答"失败在哪一步、哪一条"的原因。
+        原先签名是一串 || 连起来的，第一个不匹配就短路返回，只知道"有东西不对"。
+    */
+    ULONG TargetIndex;
+    ULONG SigMask;
 } NVPWR_CONTEXT;
 
 static BOOLEAN BytesEqual(const UCHAR* A, const UCHAR* B, SIZE_T N)
@@ -349,8 +332,13 @@ static NTSTATUS ReadPeIdentity(PUCHAR ImageBase, PULONG TimeDateStamp, PULONG Si
 static NTSTATUS ValidateBuild(NVPWR_CONTEXT* Ctx, PULONG Detail)
 {
     NTSTATUS status;
+    ULONG i, t;
+    ULONG matched = NVPWR_TARGET_NONE;
+    ULONG mask = 0;
 
-    NVPWR_LOG_INFO("ValidateBuild: begin exact 616.92 guard\n");
+    Ctx->TargetIndex = NVPWR_TARGET_NONE;
+    Ctx->SigMask = 0;
+
     status = FindNvlddmkm(&Ctx->Base, &Ctx->ModuleSize);
     if (!NT_SUCCESS(status)) {
         NVPWR_LOG_ERROR("ValidateBuild: FindNvlddmkm failed NTSTATUS=0x%08X\n", status);
@@ -366,34 +354,178 @@ static NTSTATUS ValidateBuild(NVPWR_CONTEXT* Ctx, PULONG Detail)
     NVPWR_LOG_INFO("ValidateBuild: timestamp=0x%08lX image=0x%08lX module=0x%08lX\n",
         Ctx->TimeDateStamp, Ctx->SizeOfImage, Ctx->ModuleSize);
 
-    if (Ctx->TimeDateStamp != NVPWR_EXPECTED_TIMESTAMP ||
-        Ctx->SizeOfImage != NVPWR_EXPECTED_SIZE ||
-        Ctx->ModuleSize < Ctx->SizeOfImage) {
-        NVPWR_LOG_ERROR("ValidateBuild: PE identity mismatch expected timestamp=0x%08lX image=0x%08lX\n",
-            NVPWR_EXPECTED_TIMESTAMP, NVPWR_EXPECTED_SIZE);
+    if (Ctx->ModuleSize < Ctx->SizeOfImage) {
+        NVPWR_LOG_ERROR("ValidateBuild: module size 0x%08lX smaller than SizeOfImage 0x%08lX\n",
+            Ctx->ModuleSize, Ctx->SizeOfImage);
         if (Detail) *Detail = NvpwrDetailPeIdentity;
         return STATUS_REVISION_MISMATCH;
     }
 
+    /*
+        按 PE 标识在表里找。这是整个移植模型的支点：支持一个新驱动 = 在 target.h 的
+        g_Targets[] 里加一项，这里一行都不用改。
+    */
+    for (t = 0; t < NVPWR_TARGET_COUNT; ++t) {
+        if (g_Targets[t].TimeDateStamp == Ctx->TimeDateStamp &&
+            g_Targets[t].SizeOfImage == Ctx->SizeOfImage) {
+            matched = t;
+            break;
+        }
+    }
+
+    if (matched == NVPWR_TARGET_NONE) {
+        /*
+            把已知的清单整个打出来。移植时这一条日志就是起点：它同时给出了"实际是
+            什么"和"驱动认识什么"，而这两个数字正是 target.h 新表项的头两行。
+        */
+        NVPWR_LOG_ERROR("ValidateBuild: PE identity 0x%08lX/0x%08lX matches no known target\n",
+            Ctx->TimeDateStamp, Ctx->SizeOfImage);
+        for (i = 0; i < NVPWR_TARGET_COUNT; ++i) {
+            NVPWR_LOG_ERROR("  known[%lu] %s timestamp=0x%08lX size=0x%08lX\n",
+                i, g_Targets[i].Name, g_Targets[i].TimeDateStamp, g_Targets[i].SizeOfImage);
+        }
+        if (Detail) *Detail = NvpwrDetailPeIdentity;
+        return STATUS_REVISION_MISMATCH;
+    }
+
+    g_T = &g_Targets[matched];
+    Ctx->TargetIndex = matched;
+    NVPWR_LOG_INFO("ValidateBuild: matched target %s (index %lu of %lu)\n",
+        g_T->Name, matched, (ULONG)NVPWR_TARGET_COUNT);
+
+    /*
+        逐条校验签名，并且【不短路】。
+
+        原先是一条 || 链：第一个不匹配就返回，只知道"有东西不对"。改成逐条记录掩码
+        之后，失败时能说出是第几条，而每条签名对应一个明确的 RVA —— 移植时"哪个
+        RVA 找错了"因此变成一个可以直接读出来的答案，而不是靠猜。
+
+        掩码在失败路径上也写回 Ctx，诊断 IOCTL 靠它工作。
+    */
     __try {
-        if (!BytesEqual(Ctx->Base + RVA_GPU_REGISTRY_FN, g_SigGpuRegistry, sizeof(g_SigGpuRegistry)) ||
-            !BytesEqual(Ctx->Base + RVA_F7_UPPER_LOAD, g_SigUpperLoad, sizeof(g_SigUpperLoad)) ||
-            !BytesEqual(Ctx->Base + RVA_F7_RECORD, g_SigF7Record, sizeof(g_SigF7Record)) ||
-            !BytesEqual(Ctx->Base + RVA_BOARD_TYPE0_SET, g_SigBoardSet, sizeof(g_SigBoardSet)) ||
-            !BytesEqual(Ctx->Base + RVA_SET_AMOUNT, g_SigSetAmount, sizeof(g_SigSetAmount)) ||
-            !BytesEqual(Ctx->Base + RVA_SET_ELIG, g_SigSetElig, sizeof(g_SigSetElig))) {
-            NVPWR_LOG_ERROR("ValidateBuild: one or more code signatures do not match analysed 616.92 image\n");
-            if (Detail) *Detail = NvpwrDetailCodeSignature;
-            return STATUS_REVISION_MISMATCH;
+        for (i = 0; i < NVPWR_TARGET_SIG_COUNT; ++i) {
+            const ULONG rva = g_T->Rva[g_SigRvaIndex[i]];
+            if (BytesEqual(Ctx->Base + rva, g_T->Sig[i], g_T->SigLen[i])) {
+                mask |= (1u << i);
+            } else {
+                NVPWR_LOG_ERROR("ValidateBuild: sig %lu/%lu %s MISMATCH at RVA 0x%08lX (len %lu)\n",
+                    i + 1, (ULONG)NVPWR_TARGET_SIG_COUNT, g_SigNames[i], rva, g_T->SigLen[i]);
+            }
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
+        Ctx->SigMask = mask;
+        NVPWR_LOG_ERROR("ValidateBuild: faulted while reading signatures mask=0x%02lX\n", mask);
         if (Detail) *Detail = NvpwrDetailCodeSignature;
         return GetExceptionCode();
     }
 
-    NVPWR_LOG_INFO("ValidateBuild: exact PE + signature guard PASSED\n");
+    Ctx->SigMask = mask;
+
+    if (mask != NVPWR_SIG_ALL) {
+        ULONG good = 0;
+        for (i = 0; i < NVPWR_TARGET_SIG_COUNT; ++i) { if (mask & (1u << i)) ++good; }
+        NVPWR_LOG_ERROR("ValidateBuild: only %lu of %lu signatures matched (mask=0x%02lX)\n",
+            good, (ULONG)NVPWR_TARGET_SIG_COUNT, mask);
+        if (Detail) *Detail = NvpwrDetailCodeSignature;
+        return STATUS_REVISION_MISMATCH;
+    }
+
+    NVPWR_LOG_INFO("ValidateBuild: %s PE identity + %lu signatures PASSED\n",
+        g_T->Name, (ULONG)NVPWR_TARGET_SIG_COUNT);
     return STATUS_SUCCESS;
+}
+
+/*
+    只读的构建诊断。
+
+    和 ValidateBuild 的区别是它【什么都不写】：不改 g_T，不改任何设备状态，也不
+    要求构建校验通过。因此它可以在一个不受支持的 nvlddmkm 上安全调用 —— 而那种
+    情况恰恰是最需要它的时候。
+
+    它按 PE 标识在表里找，找到就把该表项每条签名所处的 RVA 和匹配情况一起报出去。
+    移植到新驱动时，第一步就是跑一次这个：日志和结构里会直接列出"实际 PE 标识"
+    和"每条签名在哪个 RVA、匹配没有"，而"哪条签名没匹配"等价于"哪个 RVA 找错了"。
+*/
+static VOID DiagnoseBuild(NVPWR_DIAGNOSIS* Out)
+{
+    PUCHAR base = NULL;
+    ULONG moduleSize = 0, tstamp = 0, sizeOfImage = 0;
+    ULONG i, t, matched = NVPWR_TARGET_NONE;
+    NTSTATUS status;
+
+    RtlZeroMemory(Out, sizeof(*Out));
+    Out->Version = NVPWR_DIAG_VERSION;
+    Out->TargetIndex = NVPWR_TARGET_NONE;
+    Out->TargetCount = (ULONG)NVPWR_TARGET_COUNT;
+    Out->SigCount = (ULONG)NVPWR_TARGET_SIG_COUNT;
+
+    status = FindNvlddmkm(&base, &moduleSize);
+    if (!NT_SUCCESS(status)) {
+        NVPWR_LOG_ERROR("DiagnoseBuild: FindNvlddmkm failed NTSTATUS=0x%08X\n", status);
+        return;
+    }
+    Out->ModuleSize = moduleSize;
+
+    status = ReadPeIdentity(base, &tstamp, &sizeOfImage);
+    if (!NT_SUCCESS(status)) {
+        NVPWR_LOG_ERROR("DiagnoseBuild: ReadPeIdentity failed NTSTATUS=0x%08X\n", status);
+        return;
+    }
+    Out->TimeDateStamp = tstamp;
+    Out->SizeOfImage = sizeOfImage;
+
+    NVPWR_LOG_INFO("DiagnoseBuild: actual timestamp=0x%08lX size=0x%08lX module=0x%08lX\n",
+        tstamp, sizeOfImage, moduleSize);
+
+    for (t = 0; t < NVPWR_TARGET_COUNT; ++t) {
+        if (g_Targets[t].TimeDateStamp == tstamp && g_Targets[t].SizeOfImage == sizeOfImage) {
+            matched = t;
+            break;
+        }
+    }
+
+    if (matched == NVPWR_TARGET_NONE) {
+        /*
+            没有可参照的表项，RVA 就无从谈起，签名也就没得比。这不是失败，是
+            "这个构建还没被分析过"—— 而上面那行日志已经把该抄的两个数字给出去了。
+        */
+        NVPWR_LOG_ERROR("DiagnoseBuild: no table entry matches this build; porting required\n");
+        for (i = 0; i < NVPWR_TARGET_COUNT; ++i) {
+            NVPWR_LOG_ERROR("  known[%lu] %s timestamp=0x%08lX size=0x%08lX\n",
+                i, g_Targets[i].Name, g_Targets[i].TimeDateStamp, g_Targets[i].SizeOfImage);
+        }
+        return;
+    }
+
+    Out->TargetIndex = matched;
+    Out->ExpectedTimeDateStamp = g_Targets[matched].TimeDateStamp;
+    Out->ExpectedSizeOfImage = g_Targets[matched].SizeOfImage;
+    for (i = 0; i < sizeof(Out->TargetName) - 1 && g_Targets[matched].Name[i] != 0; ++i) {
+        Out->TargetName[i] = g_Targets[matched].Name[i];
+    }
+
+    NVPWR_LOG_INFO("DiagnoseBuild: matches target %s (index %lu)\n", g_Targets[matched].Name, matched);
+
+    __try {
+        for (i = 0; i < NVPWR_TARGET_SIG_COUNT && i < NVPWR_DIAG_SIG_MAX; ++i) {
+            const ULONG rva = g_Targets[matched].Rva[g_SigRvaIndex[i]];
+            Out->SigRva[i] = rva;
+            Out->SigLen[i] = g_Targets[matched].SigLen[i];
+            if (BytesEqual(base + rva, g_Targets[matched].Sig[i], g_Targets[matched].SigLen[i])) {
+                Out->SigMask |= (1u << i);
+            } else {
+                NVPWR_LOG_ERROR("DiagnoseBuild: sig %lu %s MISMATCH at RVA 0x%08lX (len %lu)\n",
+                    i, g_SigNames[i], rva, g_Targets[matched].SigLen[i]);
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        NVPWR_LOG_ERROR("DiagnoseBuild: faulted reading signatures mask=0x%02lX\n", Out->SigMask);
+        return;
+    }
+
+    NVPWR_LOG_INFO("DiagnoseBuild: done mask=0x%02lX of 0x%02lX\n", Out->SigMask, NVPWR_SIG_ALL);
 }
 
 static BOOLEAN FindSource(PUCHAR Slot, UCHAR Source, PULONG Value, PUCHAR Index)
@@ -425,12 +557,12 @@ static ULONG ComputeStrictActiveF7(PVOID Root)
     UCHAR amountActive, eligible;
 
     __try {
-        amountActive = *(volatile UCHAR*)((PUCHAR)Root + OFF_ROOT_AMOUNT_ACTIVE);
-        eligible = *(volatile UCHAR*)((PUCHAR)Root + OFF_ROOT_ELIG);
-        c = *(volatile ULONG*)((PUCHAR)Root + OFF_ROOT_CTGP);
-        a = *(volatile ULONG*)((PUCHAR)Root + OFF_ROOT_AMOUNT);
-        b = *(volatile ULONG*)((PUCHAR)Root + OFF_ROOT_LOWER);
-        u = *(volatile ULONG*)((PUCHAR)Root + OFF_ROOT_UPPER);
+        amountActive = *(volatile UCHAR*)((PUCHAR)Root + g_T->Off[NvpwrOffRootAmountActive]);
+        eligible = *(volatile UCHAR*)((PUCHAR)Root + g_T->Off[NvpwrOffRootElig]);
+        c = *(volatile ULONG*)((PUCHAR)Root + g_T->Off[NvpwrOffRootCtgp]);
+        a = *(volatile ULONG*)((PUCHAR)Root + g_T->Off[NvpwrOffRootAmount]);
+        b = *(volatile ULONG*)((PUCHAR)Root + g_T->Off[NvpwrOffRootLower]);
+        u = *(volatile ULONG*)((PUCHAR)Root + g_T->Off[NvpwrOffRootUpper]);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         return INVALID_POWER;
@@ -467,7 +599,7 @@ static NTSTATUS ResolveContext(NVPWR_CONTEXT* Ctx, PULONG Detail)
     }
 
     __try {
-        globalState = *(PVOID*)(Ctx->Base + RVA_GPU_GLOBAL);
+        globalState = *(PVOID*)(Ctx->Base + g_T->Rva[NvpwrRvaGpuGlobal]);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         if (Detail) *Detail = NvpwrDetailGlobalPointer;
@@ -480,7 +612,7 @@ static NTSTATUS ResolveContext(NVPWR_CONTEXT* Ctx, PULONG Detail)
     Ctx->DriverGlobal = globalState;
 
     __try {
-        table = *(PVOID*)((PUCHAR)globalState + OFF_GLOBAL_GPU_TABLE);
+        table = *(PVOID*)((PUCHAR)globalState + g_T->Off[NvpwrOffGlobalGpuTable]);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         if (Detail) *Detail = NvpwrDetailGpuTable;
@@ -493,7 +625,7 @@ static NTSTATUS ResolveContext(NVPWR_CONTEXT* Ctx, PULONG Detail)
     Ctx->GpuTable = table;
 
     __try {
-        count = *(volatile ULONG*)((PUCHAR)table + OFF_TABLE_COUNT);
+        count = *(volatile ULONG*)((PUCHAR)table + g_T->Off[NvpwrOffTableCount]);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         if (Detail) *Detail = NvpwrDetailGpuTable;
@@ -501,7 +633,7 @@ static NTSTATUS ResolveContext(NVPWR_CONTEXT* Ctx, PULONG Detail)
     }
     Ctx->RegistryCount = count;
     NVPWR_LOG_INFO("ResolveContext: NVIDIA GPU registry count=%lu\n", count);
-    if (count == 0 || count > GPU_COUNT_MAX) {
+    if (count == 0 || count > g_T->Off[NvpwrOffGpuCountMax]) {
         if (Detail) *Detail = NvpwrDetailGpuTable;
         return STATUS_DEVICE_NOT_READY;
     }
@@ -513,8 +645,8 @@ static NTSTATUS ResolveContext(NVPWR_CONTEXT* Ctx, PULONG Detail)
         PFN_POLICY_LOOKUP lookup;
 
         __try {
-            major = *(PVOID*)((PUCHAR)table + OFF_TABLE_ENTRY_PTR + ((SIZE_T)i * GPU_ENTRY_STRIDE));
-            gpuId = *(volatile ULONG*)((PUCHAR)table + OFF_TABLE_ENTRY_GPUID + ((SIZE_T)i * GPU_ENTRY_STRIDE));
+            major = *(PVOID*)((PUCHAR)table + g_T->Off[NvpwrOffTableEntryPtr] + ((SIZE_T)i * g_T->Off[NvpwrOffGpuEntryStride]));
+            gpuId = *(volatile ULONG*)((PUCHAR)table + g_T->Off[NvpwrOffTableEntryGpuId] + ((SIZE_T)i * g_T->Off[NvpwrOffGpuEntryStride]));
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             continue;
@@ -522,7 +654,7 @@ static NTSTATUS ResolveContext(NVPWR_CONTEXT* Ctx, PULONG Detail)
         if (!IsKernelPointer(major)) continue;
 
         __try {
-            root = *(PVOID*)((PUCHAR)major + OFF_MAJOR_POWER_ROOT);
+            root = *(PVOID*)((PUCHAR)major + g_T->Off[NvpwrOffMajorPowerRoot]);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             continue;
@@ -530,9 +662,9 @@ static NTSTATUS ResolveContext(NVPWR_CONTEXT* Ctx, PULONG Detail)
         if (!IsKernelPointer(root)) continue;
 
         __try {
-            init = *(volatile UCHAR*)((PUCHAR)root + OFF_ROOT_INIT);
-            key = *(volatile UCHAR*)((PUCHAR)root + OFF_ROOT_POLICY_KEY);
-            lookupRaw = *(PVOID*)((PUCHAR)root + OFF_ROOT_LOOKUP_FN);
+            init = *(volatile UCHAR*)((PUCHAR)root + g_T->Off[NvpwrOffRootInit]);
+            key = *(volatile UCHAR*)((PUCHAR)root + g_T->Off[NvpwrOffRootPolicyKey]);
+            lookupRaw = *(PVOID*)((PUCHAR)root + g_T->Off[NvpwrOffRootLookupFn]);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             continue;
@@ -541,7 +673,7 @@ static NTSTATUS ResolveContext(NVPWR_CONTEXT* Ctx, PULONG Detail)
 
         lookup = (PFN_POLICY_LOOKUP)lookupRaw;
         __try {
-            board = lookup((PUCHAR)root + OFF_ROOT_REGISTRY, (ULONG)key);
+            board = lookup((PUCHAR)root + g_T->Off[NvpwrOffRootRegistry], (ULONG)key);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             board = NULL;
@@ -549,12 +681,12 @@ static NTSTATUS ResolveContext(NVPWR_CONTEXT* Ctx, PULONG Detail)
         if (!IsKernelPointer(board)) continue;
 
         __try {
-            boardSetRaw = *(PVOID*)((PUCHAR)board + OFF_BOARD_SET_FN);
+            boardSetRaw = *(PVOID*)((PUCHAR)board + g_T->Off[NvpwrOffBoardSetFn]);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             continue;
         }
-        if (boardSetRaw != (PVOID)(Ctx->Base + RVA_BOARD_TYPE0_SET)) continue;
+        if (boardSetRaw != (PVOID)(Ctx->Base + g_T->Rva[NvpwrRvaBoardType0Set])) continue;
 
         Ctx->SelectedIndex = i;
         Ctx->GpuId = gpuId;
@@ -563,8 +695,8 @@ static NTSTATUS ResolveContext(NVPWR_CONTEXT* Ctx, PULONG Detail)
         Ctx->Lookup = lookup;
         Ctx->Board = board;
         Ctx->BoardSet = (PFN_BOARD_SET)boardSetRaw;
-        Ctx->SetAmount = (PFN_SET_AMOUNT)(Ctx->Base + RVA_SET_AMOUNT);
-        Ctx->SetEligibility = (PFN_SET_ELIG)(Ctx->Base + RVA_SET_ELIG);
+        Ctx->SetAmount = (PFN_SET_AMOUNT)(Ctx->Base + g_T->Rva[NvpwrRvaSetAmount]);
+        Ctx->SetEligibility = (PFN_SET_ELIG)(Ctx->Base + g_T->Rva[NvpwrRvaSetElig]);
         NVPWR_LOG_INFO(
             "ResolveContext: selected index=%lu gpuId=0x%08lX major=%p root=%p board=%p boardSet=%p\n",
             Ctx->SelectedIndex, Ctx->GpuId, Ctx->Major, Ctx->Root, Ctx->Board, Ctx->BoardSet);
@@ -595,20 +727,20 @@ static VOID FillStatusFromContext(const NVPWR_CONTEXT* Ctx, NVPWR_STATUS* Out)
     Out->BoardObject = (ULONGLONG)(ULONG_PTR)Ctx->Board;
     Out->BoardSetFunction = (ULONGLONG)(ULONG_PTR)Ctx->BoardSet;
 
-    maxSlot = (PUCHAR)Ctx->Board + OFF_SELECTOR2;
-    currentSlot = (PUCHAR)Ctx->Board + OFF_SELECTOR3;
+    maxSlot = (PUCHAR)Ctx->Board + g_T->Off[NvpwrOffSelector2];
+    currentSlot = (PUCHAR)Ctx->Board + g_T->Off[NvpwrOffSelector3];
 
     __try {
-        Out->RootInitialized = *(volatile UCHAR*)((PUCHAR)Ctx->Root + OFF_ROOT_INIT);
-        Out->Eligibility = *(volatile UCHAR*)((PUCHAR)Ctx->Root + OFF_ROOT_ELIG);
-        Out->AmountActive = *(volatile UCHAR*)((PUCHAR)Ctx->Root + OFF_ROOT_AMOUNT_ACTIVE);
-        Out->PolicyKey = *(volatile UCHAR*)((PUCHAR)Ctx->Root + OFF_ROOT_POLICY_KEY);
-        Out->CtgpTarget = *(volatile ULONG*)((PUCHAR)Ctx->Root + OFF_ROOT_CTGP);
-        Out->PpabAmount = *(volatile ULONG*)((PUCHAR)Ctx->Root + OFF_ROOT_AMOUNT);
-        Out->LowerBoundary = *(volatile ULONG*)((PUCHAR)Ctx->Root + OFF_ROOT_LOWER);
-        Out->UpperBoundary = *(volatile ULONG*)((PUCHAR)Ctx->Root + OFF_ROOT_UPPER);
-        Out->Aux28 = *(volatile ULONG*)((PUCHAR)Ctx->Root + OFF_ROOT_AUX28);
-        Out->Aux2C = *(volatile ULONG*)((PUCHAR)Ctx->Root + OFF_ROOT_AUX2C);
+        Out->RootInitialized = *(volatile UCHAR*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootInit]);
+        Out->Eligibility = *(volatile UCHAR*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootElig]);
+        Out->AmountActive = *(volatile UCHAR*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootAmountActive]);
+        Out->PolicyKey = *(volatile UCHAR*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootPolicyKey]);
+        Out->CtgpTarget = *(volatile ULONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootCtgp]);
+        Out->PpabAmount = *(volatile ULONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootAmount]);
+        Out->LowerBoundary = *(volatile ULONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootLower]);
+        Out->UpperBoundary = *(volatile ULONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootUpper]);
+        Out->Aux28 = *(volatile ULONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootAux28]);
+        Out->Aux2C = *(volatile ULONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootAux2C]);
 
         Out->MaxMode = maxSlot[SLOT_MODE];
         Out->MaxCount = maxSlot[SLOT_COUNT];
@@ -900,10 +1032,10 @@ static NTSTATUS RestoreSavedRoot(NVPWR_CONTEXT* Ctx)
         g_SavedInput14, g_SavedAmount18, g_SavedUpper24,
         g_SavedEligibility, g_SavedAmountActive);
 
-    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + OFF_ROOT_UPPER), (LONG)g_SavedUpper24);
-    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + OFF_ROOT_CTGP), (LONG)g_SavedInput14);
-    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + OFF_ROOT_AMOUNT), (LONG)g_SavedAmount18);
-    *(volatile UCHAR*)((PUCHAR)Ctx->Root + OFF_ROOT_AMOUNT_ACTIVE) = g_SavedAmountActive;
+    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootUpper]), (LONG)g_SavedUpper24);
+    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootCtgp]), (LONG)g_SavedInput14);
+    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootAmount]), (LONG)g_SavedAmount18);
+    *(volatile UCHAR*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootAmountActive]) = g_SavedAmountActive;
     KeMemoryBarrier();
 
     /* Native eligibility setter also invokes the real 4E3EF0 generator. */
@@ -1040,10 +1172,10 @@ static NTSTATUS StageTargetAtStockCeiling(NVPWR_CONTEXT* Ctx, ULONG Target, ULON
     /* Keep the saved OEM ceiling while changing generator inputs. */
     nv = CallBoardSet(Ctx, SELECTOR_MAX, SOURCE_FE, Stock);
     if (nv != 0) return STATUS_UNSUCCESSFUL;
-    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + OFF_ROOT_UPPER), (LONG)Stock);
+    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootUpper]), (LONG)Stock);
     KeMemoryBarrier();
 
-    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + OFF_ROOT_CTGP), (LONG)base);
+    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootCtgp]), (LONG)base);
     KeMemoryBarrier();
 
     nv = CallSetAmount(Ctx, PPAB_FIXED);
@@ -1160,7 +1292,7 @@ static NTSTATUS SetPowerTarget(ULONG Profile, ULONG Target, ULONG MaxRequestedMw
     }
 
     NVPWR_LOG_INFO("Phase B: writing root+3D24 UPPER=%lu mW\n", Target);
-    InterlockedExchange((volatile LONG*)((PUCHAR)ctx.Root + OFF_ROOT_UPPER), (LONG)Target);
+    InterlockedExchange((volatile LONG*)((PUCHAR)ctx.Root + g_T->Off[NvpwrOffRootUpper]), (LONG)Target);
     KeMemoryBarrier();
 
     /*
@@ -1286,10 +1418,10 @@ static NTSTATUS ForceKnownStockBaseline(NVPWR_CONTEXT* Ctx)
     /* Order mirrors the verified saved-state rollback: restore generator
        inputs/ceiling, regenerate through NVIDIA's native eligibility setter,
        then restore the board MAX source FE. */
-    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + OFF_ROOT_UPPER), (LONG)stock);
-    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + OFF_ROOT_CTGP), (LONG)stock);
-    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + OFF_ROOT_AMOUNT), 0);
-    *(volatile UCHAR*)((PUCHAR)Ctx->Root + OFF_ROOT_AMOUNT_ACTIVE) = 0;
+    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootUpper]), (LONG)stock);
+    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootCtgp]), (LONG)stock);
+    InterlockedExchange((volatile LONG*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootAmount]), 0);
+    *(volatile UCHAR*)((PUCHAR)Ctx->Root + g_T->Off[NvpwrOffRootAmountActive]) = 0;
     KeMemoryBarrier();
 
     nv = CallSetEligibility(Ctx, 0);
@@ -1462,6 +1594,21 @@ static NTSTATUS DispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             NVPWR_LOG_INFO("IOCTL_RESTORE: completed NTSTATUS=0x%08X\n", status);
         else
             NVPWR_LOG_ERROR("IOCTL_RESTORE: failed NTSTATUS=0x%08X\n", status);
+        break;
+
+    case IOCTL_NVPWR_DIAGNOSE:
+        if (stack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(NVPWR_DIAGNOSIS)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        /*
+            只读，因此【不取】g_OperationMutex。它不碰任何可变的设备状态，也就不该
+            被一个正在进行的 SET_POWER 挡住 —— 而诊断最常见的用法恰恰是"设置失败了，
+            看看为什么"，那时候去等一个可能正卡住的锁只会让情况更糟。
+        */
+        DiagnoseBuild((NVPWR_DIAGNOSIS*)Irp->AssociatedIrp.SystemBuffer);
+        information = sizeof(NVPWR_DIAGNOSIS);
+        status = STATUS_SUCCESS;
         break;
 
     default:
