@@ -501,17 +501,24 @@ namespace NvpwrControl
 			RefreshServiceButton();
 
 			/*
-				Refresh first, then write the saved state into the controls.
+				Refresh first, then show the pending power target.
 
 				The other order set the sliders while _baseMinMv and _baseMaxMv were still their
 				field-initialiser defaults, because those are derived inside RefreshVoltagePanel
-				from what mVolt reports. PushStateToControls builds each slider from baseline plus
-				offset, so running it first would place them against a guessed baseline and nothing
-				later corrects them — the one-second timer deliberately leaves the pending sliders
-				alone.
+				from what mVolt reports.
+
+				PushStateToControls is deliberately NOT called here. It writes the SAVED state into
+				the controls, which is the right thing for an explicit load — a slot, an undo, a
+				reset — and the wrong thing at startup: the saved state says what this program last
+				applied, while the user is looking at what the GPU is set to now. RefreshAll already
+				took the live values for the clocks and the voltage rails, and pushing the saved
+				ones over them put the stale numbers back on screen.
+
+				Only the power target needs writing, and _targetW was just read from the driver a
+				few lines above, so this is live too.
 			*/
 			RefreshAll(logIt: true);
-			PushStateToControls();
+			ShowPowerTarget();
 			_refreshTimer = new DispatcherTimer
 			{
 				Interval = TimeSpan.FromSeconds(1.0)
@@ -829,6 +836,31 @@ namespace NvpwrControl
 					   "\n它影响 GPU 与主机之间的接口时钟，对纯计算和显存访问都可能有细微影响。")
 					: "SYS 域频率偏移需要 mVolt+ 才能读写：本程序没有直连这个域的接口。");
 			}
+
+			/*
+				First pass: read the hardware into the boxes and nothing else.
+
+				The loop above already wrote the live values into the boxes. What this adds is the
+				log line that records what they were read as, which is the only way to tell later
+				whether the window was showing the hardware or a stale saved state.
+
+				_state is NOT written. It is the record of what the user asked for, and the service
+				replays it; filling it from the hardware would turn someone else's +300 into a
+				request the user never made, which 一键应用全部 would later act on as theirs.
+
+				The fields behind 应用 are a different matter and are adopted in RefreshVoltagePanel,
+				because those are what gets sent — a field left at 0 while the screen reads +300
+				would wipe the overclock on the first click.
+			*/
+			if (!_clockControlsSynced)
+			{
+				_clockControlsSynced = true;
+				MVoltSnapshot sysSnap = MVolt.QueryStatus(_state.MvoltPath);
+				Store.Log("频率控件已按驱动回读同步: core=" + (tuningState.CoreOk ? tuningState.CoreMhz : 0) +
+						  " mem=" + (tuningState.MemoryOk ? tuningState.MemoryMhz : 0) +
+						  " xbar=" + (tuningState.XbarOk ? tuningState.XbarMhz : 0) +
+						  " sys=" + (sysSnap.Ok ? sysSnap.SysOffsetMhz : 0) + "（仅显示，未写入配置）");
+			}
 		}
 
 		private void RefreshVoltagePanel()
@@ -910,17 +942,69 @@ namespace NvpwrControl
 				}
 			}
 
-			// Note what is deliberately NOT done here: the pending sliders are not written back.
+			/*
+				Adopt what the hardware is actually doing — ONCE, on the first successful read.
+
+				The saved state answers "what did this program last apply". The user is looking at
+				"what is the GPU set to now", and those diverge the moment anything else writes to
+				the driver: MSI Center or Afterburner, a different session, or the service replaying
+				a state this window never saw. Showing the saved value in that case is simply wrong,
+				and it is also dangerous — 应用 sends the fields, so a field still holding a stale 0
+				while the hardware holds +400 would wipe the overclock on the next click.
+
+				So the fields and the controls are both taken from the readback here, which makes
+				the three agree: what is on screen, what is in the fields, and what the driver has.
+
+				Done exactly once. This method runs on the one-second timer afterwards, and writing
+				the controls from there fought the user — see the note below, which is about the
+				timer rather than about this first pass.
+			*/
+			if (!_voltControlsSynced)
+			{
+				_voltControlsSynced = true;
+
+				_vminOffsetMv  = (int)(mVoltSnapshot.Nvvdd.VminUv / 1000);
+				_relOffsetMv   = (int)(mVoltSnapshot.Nvvdd.RelUv  / 1000);
+				_altOffsetMv   = (int)(mVoltSnapshot.Nvvdd.AltUv  / 1000);
+				_ovOffsetMv    = (int)(mVoltSnapshot.Nvvdd.OvUv   / 1000);
+				_msvddVminOffsetMv = (int)(mVoltSnapshot.Msvdd.VminUv / 1000);
+				_msvddRelOffsetMv  = (int)(mVoltSnapshot.Msvdd.RelUv  / 1000);
+				_msvddAltOffsetMv  = (int)(mVoltSnapshot.Msvdd.AltUv  / 1000);
+				_msvddOvOffsetMv   = (int)(mVoltSnapshot.Msvdd.OvUv   / 1000);
+
+				UpdateVoltageControls();
+
+				/*
+					Read only. The fields and the controls are filled so the window shows what the
+					GPU is actually doing; _state is deliberately left alone.
+
+					_state is the record of what the user asked this program to apply, and the
+					service replays it at boot. Overwriting it with whatever the hardware happens to
+					hold would turn "another tool set +300" into "this program was told to apply
+					+300" — a claim the user never made, and one that a later 一键应用全部 would then
+					act on as if it were theirs.
+
+					The fields do have to be filled. They are what 应用 sends, so a field left at 0
+					while the screen reads +300 would wipe the overclock on the next click. Adoption
+					for display and for the send path, not for the record.
+				*/
+				Store.Log("电压控件已按驱动回读同步: NVVDD vmin=" + _vminOffsetMv + " rel=" + _relOffsetMv +
+						  " MSVDD vmin=" + _msvddVminOffsetMv + " rel=" + _msvddRelOffsetMv +
+						  "（仅显示，未写入配置）");
+			}
+
+			// Note what is deliberately NOT done on the timer: the pending sliders are not written back.
 			//
-			// This runs on the one-second timer, and pushing _relOffsetMv / _ovOffsetMv into the
+			// This runs every second, and pushing _relOffsetMv / _ovOffsetMv into the
 			// controls made the refresh fight the user. Choosing 1000 mV routes the request to OV
 			// and leaves REL at zero; the next tick then set the maximum slider back to
 			// 1025 (= baseline + 0), which fired its handler, took the "at or above baseline"
 			// branch and cleared the OV offset again. The edit vanished one second after it was
 			// made.
 			//
-			// The sliders are the source of truth for pending edits; only an explicit load (slot,
-			// undo, reset) writes into them, and that goes through PushStateToControls.
+			// The sliders are the source of truth for pending edits after the first pass above;
+			// only an explicit load (slot, undo, reset) writes into them, and that goes through
+			// PushStateToControls.
 		}
 
 		private void RefreshReadout()
@@ -1552,6 +1636,23 @@ private static string Fmt(double v, string unit)
 		/// would call each other and overwrite the values they had just been given.
 		/// </summary>
 		private bool _syncingVoltControls;
+
+		/// <summary>
+		/// True once the controls have been filled from a live readback instead of the saved state.
+		///
+		/// The saved state answers "what did this program last apply"; the user is looking at what
+		/// the GPU is set to now. Those are different questions and they diverge the moment
+		/// anything else writes to the driver — Afterburner, MSI Center, another session, or the
+		/// service replaying a state this window has not seen. Measured on this machine: core +200
+		/// and mem +500 read back as 0 after a display-driver reload, so nothing here is held in
+		/// hardware either.
+		///
+		/// The adoption happens once, on the first successful read. Afterwards the controls are the
+		/// pending edit and the one-second refresh must leave them alone.
+		/// </summary>
+		private bool _voltControlsSynced;
+
+		private bool _clockControlsSynced;
 
 		/// <summary>
 		/// Moves a slider without re-entering its handler.
