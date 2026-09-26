@@ -425,10 +425,32 @@ static bool WriteFactoryWall(unsigned int profile, unsigned int watts) {
 static void CapturePowerFloorIfAbsent(const DesiredState& current) {
     DesiredState st = current;
 
-    unsigned int baselineMw = 0, profile = 0, supportedMinMw = 0;
+    unsigned int baselineMw = 0, driverProfile = 0, supportedMinMw = 0;
     std::wstring err;
-    if (!QueryDriverBaseline(baselineMw, profile, supportedMinMw, err)) {
+    if (!QueryDriverBaseline(baselineMw, driverProfile, supportedMinMw, err)) {
         SvcLog(L"power floor: " + err);
+        return;
+    }
+
+    /*
+        Which profile to key the record by.
+
+        The STORED profile, not the driver's ActiveProfile. The driver reports that as 0 until its
+        power policy has been armed, and at this point in the replay it has not been — so on a
+        cold boot the driver says 0 while the card is a 5090, and the record written under 0 is
+        unreadable on the next start because the comparison is then 0 against 3.
+
+        The GUI keys the record by the same stored number. That is the whole point: both entry
+        points must agree on the identity they file the value under, or each writes a record the
+        other cannot find. Observed before this change: the service logged profile 0 and the GUI
+        logged profile 3 for the same card on the same boot.
+
+        The driver's answer is only used when the state has none — a first run with no state file
+        at all, where anything is better than nothing.
+    */
+    const unsigned int profile = (st.power.profile != 0) ? st.power.profile : driverProfile;
+    if (profile == 0) {
+        SvcLog(L"power floor: no profile known yet (state and driver both report 0), not recording");
         return;
     }
 

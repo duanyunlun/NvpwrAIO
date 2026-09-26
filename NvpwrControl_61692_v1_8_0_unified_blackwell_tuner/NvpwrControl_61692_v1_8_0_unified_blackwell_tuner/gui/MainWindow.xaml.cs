@@ -250,6 +250,24 @@ namespace NvpwrControl
 			if (Driver.QueryStatus(out var status, out var _))
 			{
 				/*
+					The identity the record is filed under.
+
+					The STORED profile, not the driver's ActiveProfile — the same choice the service
+					makes, because both entry points have to agree on this number or each files a
+					record the other cannot find. The driver reports ActiveProfile as 0 until its
+					policy has been armed, so at boot it is the less reliable of the two, and it once
+					had the service logging profile 0 while this side logged 3 for the same card on
+					the same boot. The stored number is stable for the whole session.
+
+					status.ActiveProfile is only the fallback for a first run with no state.
+				*/
+				uint profile = (_state.Profile != 0) ? _state.Profile : status.ActiveProfile;
+				if (profile == 0)
+				{
+					return 350;
+				}
+
+				/*
 					The registry record comes first, and a hit ends the search.
 
 					This is a property of the CARD, so it lives somewhere a card property belongs
@@ -257,16 +275,15 @@ namespace NvpwrControl
 					rewritten by every slot save, undo and restore-defaults. A fact that must never
 					change should not live in the file that changes most.
 
-					A different GPU profile means different hardware or a different VBIOS and
-					therefore a different wall, and that is the only thing that may invalidate the
-					record. Nothing else rewrites it — not a live reading, not a restart, not the
-					ceiling having moved.
+					Keying by profile is the only thing that may invalidate the record: a different
+					profile means different hardware or a different VBIOS. Nothing else rewrites it —
+					not a live reading, not a restart, not the ceiling having moved.
 				*/
 				int recorded;
-				if (FactoryWall.TryRead(status.ActiveProfile, out recorded))
+				if (FactoryWall.TryRead(profile, out recorded))
 				{
 					_state.PowerFloorW = recorded;
-					_state.PowerFloorProfile = status.ActiveProfile;
+					_state.PowerFloorProfile = profile;
 					return recorded;
 				}
 
@@ -287,12 +304,12 @@ namespace NvpwrControl
 					if (fromDriver > 0)
 					{
 						_state.PowerFloorW = fromDriver;
-						_state.PowerFloorProfile = status.ActiveProfile;
+						_state.PowerFloorProfile = profile;
 						_state.PowerFloorBoot = stamp;
 						SaveState();
-						FactoryWall.Write(status.ActiveProfile, fromDriver);
+						FactoryWall.Write(profile, fromDriver);
 						Store.Log("出厂功耗墙已记录: " + fromDriver + " W（驱动 OemBaseline，profile " +
-								  status.ActiveProfile + "，已写入注册表 HKLM\\SOFTWARE\\NvpwrControl，" +
+								  profile + "，已写入注册表 HKLM\\SOFTWARE\\NvpwrControl，" +
 								  "建立于 " + boot.ToString("MM-dd HH:mm:ss") + "）");
 						return fromDriver;
 					}
