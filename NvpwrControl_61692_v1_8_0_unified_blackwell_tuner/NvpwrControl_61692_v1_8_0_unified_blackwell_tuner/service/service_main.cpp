@@ -23,6 +23,7 @@
 */
 
 #include <windows.h>
+#include <tlhelp32.h>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -38,6 +39,33 @@ static SERVICE_STATUS_HANDLE g_statusHandle = nullptr;
 static SERVICE_STATUS g_status{};
 static HANDLE g_stopEvent = nullptr;
 static HANDLE g_pipe = nullptr;
+
+/*
+    Signalled when a user logs on.
+
+    The replay used to run the instant the service started, which on this machine is about
+    twelve seconds after the kernel hands control over — while nvlddmkm is still building the
+    display stack. Raising the power ceiling re-enters NVIDIA's own power-policy generator, and
+    doing that at that moment hung the machine outright: no bugcheck, no dump, mouse frozen and
+    no shell, and the only way out was the power button. The Kernel-Power 41 record for that
+    event has BugcheckCode 0 and LongPowerButtonPressDetected true, which is the signature of a
+    hard hang rather than a crash.
+
+    So the replay waits for the desktop. There are two ways that happens and both are needed:
+
+      - the service starts before the user logs on  -> the session-change notification arrives
+      - the service starts after  the user logs on  -> the notification already fired, so the
+        desktop is probed once at startup instead
+
+    Neither alone covers the other. A service restarted by the SCM, or started by hand from an
+    already-running session, would wait forever on an event that has been and gone.
+*/
+#define NVPWR_WTS_SESSION_LOGON  5
+#define NVPWR_WTS_SESSION_UNLOCK 8
+
+static HANDLE g_logonEvent = nullptr;
+static const DWORD kSettleMs = 10000;          /* after the desktop appears */
+static const DWORD kDesktopTimeoutMs = 600000; /* give up after ten minutes */
 
 /* ------------------------------------------------------------------ */
 /* logging                                                            */
@@ -74,7 +102,8 @@ static void SetServiceState(DWORD state, DWORD exitCode = NO_ERROR, DWORD hint =
     if (state == SERVICE_START_PENDING || state == SERVICE_STOP_PENDING)
         g_status.dwControlsAccepted = 0;
     else
-        g_status.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
+        g_status.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN |
+                                      SERVICE_ACCEPT_SESSIONCHANGE;
     SetServiceStatus(g_statusHandle, &g_status);
 }
 
@@ -773,19 +802,101 @@ static bool WriteResponse(HANDLE pipe, const std::wstring& response) {
 /* ------------------------------------------------------------------ */
 /* service body                                                       */
 /* ------------------------------------------------------------------ */
+/* waiting for a usable desktop                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+    Is explorer.exe running in that session?
+
+    Matched by name because the shell's process id is not knowable in advance, and the session
+    check matters: a service running as SYSTEM can see processes from every session, and an
+    explorer.exe belonging to a disconnected RDP session says nothing about whether the console
+    desktop is up.
+*/
+static bool ExplorerRunningInSession(DWORD session) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    bool found = false;
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, L"explorer.exe") != 0) continue;
+            DWORD owner = 0;
+            if (ProcessIdToSessionId(pe.th32ProcessID, &owner) && owner == session) {
+                found = true;
+                break;
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return found;
+}
+
+/*
+    The desktop is up when there is an active console session and the shell is running in it.
+
+    Session 0 is the services session and is never the console, so it is rejected explicitly —
+    WTSGetActiveConsoleSessionId returns 0 on a machine with no interactive session, and that
+    must not be mistaken for a logged-in user.
+
+    The shell is the signal rather than the session state alone because a session is already
+    "active" while the logon UI is on screen, which is exactly the state the machine hung in.
+*/
+static bool IsDesktopReady() {
+    DWORD session = WTSGetActiveConsoleSessionId();
+    if (session == 0xFFFFFFFF || session == 0) return false;
+    return ExplorerRunningInSession(session);
+}
+
+/*
+    Waits for the desktop, then for it to settle, then replays.
+
+    The settle delay is not padding. A fast logon finishes the shell in a second or two, and the
+    display stack is still completing behind it — the same window in which raising the ceiling
+    hung this machine. Ten seconds costs nothing at boot and removes the race.
+*/
+static void WaitForDesktopThenReplay() {
+    if (IsDesktopReady()) {
+        /* The notification for this logon has already been delivered, so there is nothing to
+           wait for — a service started by hand, or restarted by the SCM after a failure. */
+        SvcLog(L"replay(startup): desktop already up");
+    } else {
+        SvcLog(L"replay(startup): waiting for the interactive desktop");
+        HANDLE events[2] = { g_stopEvent, g_logonEvent };
+        DWORD wait = WaitForMultipleObjects(2, events, FALSE, kDesktopTimeoutMs);
+
+        if (wait == WAIT_OBJECT_0) return;                       /* stopping */
+        if (wait == WAIT_TIMEOUT) {
+            SvcLog(L"replay(startup): desktop did not appear within ten minutes; not replaying. "
+                   L"Apply from the window when you are ready.");
+            return;
+        }
+        SvcLog(L"replay(startup): logon seen");
+    }
+
+    SvcLog(L"replay(startup): letting the display stack settle for 10 s");
+    if (WaitForSingleObject(g_stopEvent, kSettleMs) == WAIT_OBJECT_0) return;
+
+    /* Retry within the replay itself: the display stack is usually up by now, but the driver
+       may still refuse until its own readiness checks pass. */
+    ReplayDesiredState(L"startup", /*attempts*/ 12, /*delayMs*/ 5000);
+}
+
+/* ------------------------------------------------------------------ */
 
 static DWORD WINAPI ServiceThread(LPVOID) {
     SetServiceState(SERVICE_RUNNING);
 
     /*
-        The factory wall is recorded inside ReplayDesiredState instead, once the device is
-        actually open. Running it here meant it ran before the driver had loaded, which on this
+        The factory wall is recorded inside ReplayDesiredState, once the device is actually open.
+        Running it before the loop meant it ran before the driver had loaded, which on this
         machine is every boot.
-    */
 
-    /* First replay: retry for a while because the display stack is usually not
-       ready immediately after boot. */
-    ReplayDesiredState(L"startup", /*attempts*/ 12, /*delayMs*/ 5000);
+        The replay itself no longer runs here directly — see WaitForDesktopThenReplay.
+    */
+    WaitForDesktopThenReplay();
 
     HANDLE events[2] = { g_stopEvent, nullptr };
 
@@ -830,13 +941,27 @@ static DWORD WINAPI ServiceThread(LPVOID) {
     return 0;
 }
 
-static DWORD WINAPI ServiceControl(DWORD control, DWORD, LPVOID, LPVOID) {
+static DWORD WINAPI ServiceControl(DWORD control, DWORD eventType, LPVOID eventData, LPVOID) {
     switch (control) {
     case SERVICE_CONTROL_STOP:
     case SERVICE_CONTROL_SHUTDOWN:
         SetServiceState(SERVICE_STOP_PENDING, NO_ERROR, 5000);
         if (g_stopEvent) SetEvent(g_stopEvent);
         return NO_ERROR;
+
+    /*
+        A user logged on or unlocked. Both count: the settings live in driver memory and are lost
+        on a driver reload, which can happen without a reboot, and an unlock is as good a moment
+        as any to notice. Nothing is replayed here — the handler must return promptly, so it only
+        wakes the thread that is already waiting.
+    */
+    case SERVICE_CONTROL_SESSIONCHANGE:
+        if ((eventType == NVPWR_WTS_SESSION_LOGON || eventType == NVPWR_WTS_SESSION_UNLOCK) &&
+            g_logonEvent) {
+            SetEvent(g_logonEvent);
+        }
+        return NO_ERROR;
+
     case SERVICE_CONTROL_INTERROGATE:
         SetServiceStatus(g_statusHandle, &g_status);
         return NO_ERROR;
@@ -859,6 +984,11 @@ static void WINAPI ServiceMain(DWORD, LPWSTR*) {
         return;
     }
 
+    /* Auto-reset: the waiter consumes one logon, and a later unlock signals it again for the
+       next wait. Manual-reset would leave it signalled forever and make every subsequent wait
+       return instantly. */
+    g_logonEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+
     SvcLog(L"service starting");
     ServiceThread(nullptr);
     SvcLog(L"service stopped");
@@ -874,9 +1004,12 @@ int wmain(int argc, wchar_t** argv) {
 
     if (console) {
         g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        g_logonEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         SvcLog(L"service starting in console mode");
         wprintf(L"NvpwrSvc running in console mode. Press Ctrl+C to stop.\n");
-        ReplayDesiredState(L"console-startup", 1, 0);
+        /* No separate replay here: the body below waits for a desktop and then replays, and the
+           person running this from a console is already looking at one, so that path takes the
+           short branch. Replaying twice would only duplicate the log lines. */
         ServiceThread(nullptr);
         return 0;
     }

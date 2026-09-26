@@ -115,12 +115,12 @@ namespace NvpwrControl
 		/*
 			MSVDD —— 和 NVVDD 并列的另一条供电轨。
 
-			NVVDD 供 GPU 核心本体，MSVDD 供交叉开关（XBAR）、L2 和内存接口那部分。两者有各自
+			NVVDD 供 GPU 核心本体，MSVDD 供 XBar、L2 和内存接口那部分。两者有各自
 			的电压和功率遥测，所以界面上给它们各一组限值滑块，互不影响。
 
-			XBAR 时钟就跑在 MSVDD 这个域上：驱动里 ClockDomains 条目的 +0x114 是 XBAR 频率、
+			XBar 时钟就跑在 MSVDD 这个域上：驱动里 ClockDomains 条目的 +0x114 是 XBar 频率、
 			+0x11C 是 MSVDD 电压请求，字段挨在一起、属于同一个域描述符。所以调 MSVDD 的限值
-			会直接影响 XBAR 能跑多高。
+			会直接影响 XBar 能跑多高。
 		*/
 		private int _msvddVminOffsetMv;
 
@@ -1695,7 +1695,7 @@ private static string Fmt(double v, string unit)
 			bool[] array2 = new bool[3] { tuningState.CoreOk, tuningState.MemoryOk, tuningState.XbarOk };
 			long[] array3 = new long[3] { tuningState.CoreMin, tuningState.MemoryMin, tuningState.XbarMin };
 			long[] array4 = new long[3] { tuningState.CoreMax, tuningState.MemoryMax, tuningState.XbarMax };
-			string[] array5 = new string[3] { "核心", "显存", "XBAR" };
+			string[] array5 = new string[3] { "核心", "显存", "XBar" };
 			for (int i = 0; i < 3; i++)
 			{
 				if (array2[i])
@@ -1783,7 +1783,7 @@ private static string Fmt(double v, string unit)
 			}
 			else
 			{
-				// No range is reported for XBAR — the driver does not expose one — and the row is
+				// No range is reported for XBar — the driver does not expose one — and the row is
 				// hidden whenever that is so. The field is disabled in that case and the guard at
 				// the top of this method has already returned; these bounds are only here so the
 				// value cannot run away if that ever changes.
@@ -1859,7 +1859,7 @@ private static string Fmt(double v, string unit)
 					string sysErr;
 					if (!MVolt.SetSysOffset(_state.MvoltPath, desiredState.Clock.SysOffsetMhz, out sysErr))
 					{
-						Warn("核心/显存/XBAR 已应用，但 SYS 偏移没有生效：\r\n" + sysErr);
+						Warn("核心/显存/XBar 已应用，但 SYS 偏移没有生效：\r\n" + sysErr);
 					}
 				}
 				_state.Clock = desiredState.Clock;

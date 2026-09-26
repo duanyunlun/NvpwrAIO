@@ -29,7 +29,7 @@
         Voltage offers both routes to the rail, because they are different controls:
           · 最低/最高电压    absolute limits across the device range 445-1280 mV; these drive
                              the VMIN and REL offsets
-          · 核心/XBAR 偏移   demand offsets, -25…+50 mV; these request a voltage rather than
+          · 核心 / XBar 偏移   demand offsets, -25…+50 mV; these request a voltage rather than
                              bounding one
         Every one is a draggable slider — this card has no stepper buttons.
     -->
@@ -465,7 +465,7 @@
                         </StackPanel>
 
                         <StackPanel x:Name="ClkXbarRow" Orientation="Horizontal" Margin="0,10,0,0">
-                            <TextBlock Text="XBAR" Style="{StaticResource RowLabel}" Width="38"
+                            <TextBlock Text="XBar" Style="{StaticResource RowLabel}" Width="38"
                                        ToolTip="GPU 内部把核心和显存连起来的交换网络，进出显存的数据都经过它。"/>
                             <TextBlock x:Name="ClkXbarMinLabel" Style="{StaticResource Caption}"
                                        VerticalAlignment="Center" Margin="0,0,6,0" Text="—"/>
@@ -485,11 +485,11 @@
                             <TextBlock Style="{StaticResource Caption}" Foreground="{StaticResource TextDim}"
                                        VerticalAlignment="Center" Margin="12,0,0,0"
                                        Text="核心-显存的交换网络"
-                                       ToolTip="XBAR 是 GPU 内部把核心和显存连起来的交换网络，进出显存的数据都经过它。&#10;对显存敏感的场景（高分辨率、大纹理）提速可能有效；纯计算场景收益很小。&#10;调高后若出现花屏或驱动重置，回退频率，或在电压卡片里把 MSVDD 的最低电压抬高一点。"/>
+                                       ToolTip="XBar 是 GPU 内部把核心和显存连起来的交换网络，进出显存的数据都经过它。&#10;对显存敏感的场景（高分辨率、大纹理）提速可能有效；纯计算场景收益很小。&#10;调高后若出现花屏或驱动重置，回退频率，或在电压卡片里把 MSVDD 的最低电压抬高一点。"/>
                         </StackPanel>
 
                         <!-- SYS —— 系统/主机接口域的时钟。
-                             和 XBAR 一样属于 GPU 内部的总线域而非核心，所以单独一行。 -->
+                             和 XBar 一样属于 GPU 内部的总线域而非核心，所以单独一行。 -->
                         <StackPanel x:Name="ClkSysRow" Orientation="Horizontal" Margin="0,10,0,0">
                             <TextBlock Text="SYS" Style="{StaticResource RowLabel}" Width="38"
                                        ToolTip="系统/宿主接口域的时钟，负责 GPU 与主机之间的通路。"/>
@@ -645,8 +645,8 @@
                         <Border Height="1" Background="{StaticResource CardBorder}" Margin="0,16,0,0"/>
 
                         <!-- MSVDD —— 和 NVVDD 并列的另一条轨。
-                             供交叉开关（XBAR）、L2 和内存接口，有独立的电压和功率遥测。
-                             XBAR 时钟就跑在这个域上，所以下面的 XBAR 电压请求和这里的上下限
+                             供 XBar、L2 和内存接口，有独立的电压和功率遥测。
+                             XBar 时钟就跑在这个域上，所以下面的 XBar 电压请求和这里的上下限
                              说的是同一件事的两条路径。 -->
                         <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
                             <Border Width="3" CornerRadius="2" Margin="0,1,8,1"
@@ -654,8 +654,8 @@
                             <TextBlock Text="MSVDD" Style="{StaticResource SectionTitle}"/>
                             <TextBlock Style="{StaticResource Caption}" Foreground="{StaticResource TextDim}"
                                        VerticalAlignment="Center" Margin="10,0,0,0"
-                                       Text="交叉开关 / L2 / 内存接口供电 · XBAR 时钟跑在这个域上"
-                                       ToolTip="MSVDD 是核心与显存之间那部分电路的供电轨：交叉开关（XBAR）、L2 缓存和内存接口。&#10;它和 NVVDD 是物理上分开的两条轨，各有独立的电压和功率遥测。&#10;GPU 内部的 XBAR 时钟就跑在这个域上 —— 所以这里的上下限直接决定 XBAR 能跑多高。"/>
+                                       Text="XBar / L2 / 内存接口供电 · XBar 时钟跑在这个域上"
+                                       ToolTip="MSVDD 是核心与显存之间那部分电路的供电轨：XBar、L2 缓存和内存接口。&#10;它和 NVVDD 是物理上分开的两条轨，各有独立的电压和功率遥测。&#10;GPU 内部的 XBar 时钟就跑在这个域上 —— 所以这里的上下限直接决定 XBar 能跑多高。"/>
                         </StackPanel>
 
                         <Grid Margin="0,10,0,0">
@@ -665,7 +665,7 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Style="{StaticResource RowLabel}" TextTrimming="CharacterEllipsis"
                                        Text="工作电压范围 · 最小 / 最大"
-                                       ToolTip="MSVDD 轨的最低与最高工作电压，对应驱动的 VMIN 与 REL/ALT 偏移。&#10;MSVDD 给交叉开关（XBAR）、L2 和内存接口供电，和供核心的 NVVDD 是两条独立的轨。&#10;器件允许区间 445–1280 mV。"/>
+                                       ToolTip="MSVDD 轨的最低与最高工作电压，对应驱动的 VMIN 与 REL/ALT 偏移。&#10;MSVDD 给XBar、L2 和内存接口供电，和供核心的 NVVDD 是两条独立的轨。&#10;器件允许区间 445–1280 mV。"/>
                             <TextBlock Grid.Column="1" x:Name="MsvddRangeLabel" Style="{StaticResource BigSub}"
                                        Foreground="{StaticResource Warn}" FontWeight="SemiBold" Text="— mV"/>
                         </Grid>

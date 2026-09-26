@@ -115,8 +115,15 @@ namespace NvpwrControl
 
             // sc.exe is used rather than the SCM API because a single call is
             // clearer here and the failure text is directly actionable.
+            //
+            // delayed-auto, not auto. An auto-start service runs about twelve seconds after the
+            // kernel hands over, while nvlddmkm is still building the display stack — and the
+            // replay raises the power ceiling by re-entering NVIDIA's own power-policy
+            // generator, which hung this machine outright in that window. The service also waits
+            // for a logon on its own, so this is a second line of defence rather than the
+            // mechanism: it means the process is not even running during the risky part of boot.
             string output;
-            if (!RunSc("create " + Name + " binPath= \"" + exe + "\" start= auto", out output))
+            if (!RunSc("create " + Name + " binPath= \"" + exe + "\" start= delayed-auto", out output))
             {
                 // Already exists: fall through to a config update instead.
                 if (output.IndexOf("1073", StringComparison.Ordinal) < 0 &&
@@ -127,7 +134,7 @@ namespace NvpwrControl
                     return false;
                 }
             }
-            RunSc("config " + Name + " binPath= \"" + exe + "\" start= auto", out output);
+            RunSc("config " + Name + " binPath= \"" + exe + "\" start= delayed-auto", out output);
 
             if (!RunSc("start " + Name, out output))
             {
