@@ -324,7 +324,8 @@ namespace NvpwrControl
 			Tip(PwNow, "GPU 当前实际功耗。空闲时只有几十瓦，烤机时才会接近上限。\n判断解锁是否真的生效，看这个值在负载下能不能超过出厂上限。");
 			Tip(PwTemp, "核心温度 / 温度墙。\n余量 = 温度墙 − 核心温度，是判断提高功耗上限后能否吃满的依据。");
 			Tip(VoltNow, "核心电压实时读数（µV 精度，每秒刷新）。\n来源是 NVAPI 的未公开接口 ClientVoltRailsGetStatus，已在本地验证过。");
-			Tip(VoltApplied, "当前生效的核心轨偏移，也就是已经写进驱动里的值。\n与右侧「核心轨偏移」不同：那个是待下发的，这个是最新生效的。\n两者不一致说明有改动还没点“应用”。");
+			Tip(MsvddVoltNow, "MSVDD 轨实时电压，来源是 HWiNFO 的共享内存。\n公开的 NVAPI 接口里没有这条轨的实测值 —— 项目文档明确写了不声称能读到它 —— 所以这里借用 HWiNFO 的传感器读数；HWiNFO 没运行时显示 —。");
+			Tip(MsvddLimitsNow, "MSVDD 当前**实际生效**的电压上下限，从 mVolt+ 回读。\n这是电压策略值，不是实测电压；实测值看左边。");
 			Tip(VoltLimitsNow, "当前**实际生效**的电压上下限，从 mVolt+ 回读，不是待下发的值。\n下限 = 出厂下限 + VMIN 偏移；上限 = min(REL, ALT/OP, OV) 的评估结果。\n拖动滑块不会改变这里 —— 只有点“应用”并回读成功后才更新。\n注意这是电压策略值，不是实测电压；实测值看左边的“核心电压”。");
 			Tip(VoltOffsetLabel, "待下发的核心电压需求偏移，范围 " + text + "。\n点“应用”后由 mVolt+ 写入，随后本程序回读确认。");
 			Tip(ClkCore, "核心频率偏移，单位 MHz。\n合法范围标在输入框两侧，超出会被拒绝，不会下发给驱动。");
@@ -757,6 +758,33 @@ namespace NvpwrControl
 				array3[i].SetResourceReference(TextBlock.ForegroundProperty, array4[i] ? "Danger" : "TextDim");
 			}
 			ClkXbarRow.Visibility = ((!tuningState.XbarOk) ? Visibility.Collapsed : Visibility.Visible);
+
+			/*
+				SYS comes from mVolt+ rather than Tuning.Query(), so it is filled in here rather
+				than in the loop above. Its range is whatever the companion reports; without the
+				companion there is nothing to read it from and the row goes dim rather than
+				offering a control that cannot be applied.
+			*/
+			if (ClkSysRow != null)
+			{
+				MVoltSnapshot snap = MVolt.QueryStatus(_state.MvoltPath);
+				bool sysOk = snap.Ok && snap.SysLimitMaxMhz != 0;
+				ClkSysRow.Opacity = sysOk ? 1.0 : 0.45;
+				ClkSys.IsEnabled = sysOk;
+				ClkSysMinLabel.Text = sysOk ? snap.SysLimitMinMhz.ToString(CultureInfo.InvariantCulture) : "—";
+				ClkSysMaxLabel.Text = sysOk ? ("+" + snap.SysLimitMaxMhz.ToString(CultureInfo.InvariantCulture)) : "—";
+				ClkSysMinLabel.SetResourceReference(TextBlock.ForegroundProperty, sysOk ? "Accent" : "TextDim");
+				ClkSysMaxLabel.SetResourceReference(TextBlock.ForegroundProperty, sysOk ? "Danger" : "TextDim");
+				if (!ClkSys.IsFocused)
+				{
+					ClkSys.Text = (snap.Ok ? snap.SysOffsetMhz : _state.Clock.SysOffsetMhz)
+								  .ToString(CultureInfo.InvariantCulture);
+				}
+				Tip(ClkSysRow, sysOk
+					? ("SYS 域频率偏移，通过 mVolt+ 下发。\n允许 " + snap.SysLimitMinMhz + " … +" + snap.SysLimitMaxMhz + " MHz。" +
+					   "\n它影响 GPU 与主机之间的接口时钟，对纯计算和显存访问都可能有细微影响。")
+					: "SYS 域频率偏移需要 mVolt+ 才能读写：本程序没有直连这个域的接口。");
+			}
 		}
 
 		private void RefreshVoltagePanel()
@@ -765,10 +793,8 @@ namespace NvpwrControl
 			_mvoltReady = !string.IsNullOrEmpty(_mvoltPath) && File.Exists(_mvoltPath);
 			VoltSlider.IsEnabled = _mvoltReady;
 			XbarSlider.IsEnabled = _mvoltReady;
-			MinVoltSlider.IsEnabled = _mvoltReady;
-			MaxVoltSlider.IsEnabled = _mvoltReady;
-			MsvddMinSlider.IsEnabled = _mvoltReady;
-			MsvddMaxSlider.IsEnabled = _mvoltReady;
+			NvvddRange.IsEnabled = _mvoltReady;
+			MsvddRange.IsEnabled = _mvoltReady;
 			MVoltSnapshot mVoltSnapshot = MVolt.QueryStatus(_state.MvoltPath);
 			if (!mVoltSnapshot.Ok || mVoltSnapshot.NvvddLimitMaxMv <= 0)
 			{
@@ -823,25 +849,22 @@ namespace NvpwrControl
 				_msvddBaseMaxMv = (int)(mVoltSnapshot.MsvddLimitMaxMv - mVoltSnapshot.Msvdd.RelUv / 1000);
 				_appliedMsvddMinMv = (int)mVoltSnapshot.MsvddLimitMinMv;
 				_appliedMsvddMaxMv = (int)mVoltSnapshot.MsvddLimitMaxMv;
-				if (MsvddMinSlider != null)
+				if (MsvddRange != null)
 				{
-					MsvddMinSlider.Minimum = _absMinMv;
-					MsvddMinSlider.TickFrequency = ((mVoltSnapshot.MsvddStepUv > 0) ? ((double)mVoltSnapshot.MsvddStepUv / 1000.0) : 5.0);
-					MsvddMaxSlider.TickFrequency = MsvddMinSlider.TickFrequency;
+					MsvddRange.Minimum = _absMinMv;
+					MsvddRange.TickFrequency = ((mVoltSnapshot.MsvddStepUv > 0) ? ((double)mVoltSnapshot.MsvddStepUv / 1000.0) : 5.0);
 				}
 			}
 			if (mVoltSnapshot.NvvddMinUv > 0 && mVoltSnapshot.NvvddMaxUv > 0)
 			{
 				_absMinMv = (int)(mVoltSnapshot.NvvddMinUv / 1000);
 				_absMaxMv = (int)(mVoltSnapshot.NvvddMaxUv / 1000);
-				if (MinVoltSlider != null)
+				if (NvvddRange != null)
 				{
-					// Only the floor and the tick step come from the device range. The minimum's
-					// upper bound is not the device maximum — it is whatever ceiling is in force,
-					// which is narrower, so ClampMinSlider sets it from the current limits below.
-					MinVoltSlider.Minimum = _absMinMv;
-					MinVoltSlider.TickFrequency = ((mVoltSnapshot.NvvddStepUv > 0) ? ((double)mVoltSnapshot.NvvddStepUv / 1000.0) : 5.0);
-					ClampMinSlider();
+					// 只有下端和步进取自器件范围。上端不用夹到器件最大值 —— 双滑块自己
+					// 保证了下限不超过上限，不需要再做一个随上限收窄的夹取。
+					NvvddRange.Minimum = _absMinMv;
+					NvvddRange.TickFrequency = ((mVoltSnapshot.NvvddStepUv > 0) ? ((double)mVoltSnapshot.NvvddStepUv / 1000.0) : 5.0);
 				}
 			}
 
@@ -867,9 +890,18 @@ namespace NvpwrControl
 			MemNow.Text = (envSample.HasMemoryClock ? Fmt(envSample.MemoryClockMhz, " MHz") : "—");
 			PwTemp.Text = ((envSample.HasTemp && envSample.HasSpeedThreshold) ? (Fmt(envSample.TempC, "") + "/" + Fmt(envSample.SpeedThresholdC, " °C")) : (envSample.HasTemp ? Fmt(envSample.TempC, " °C") : "—"));
 			VoltLimitsNow.Text = _appliedMinMv + "–" + _appliedMaxMv + " mV";
-			long demandCoreMv = _state.Voltage.DemandCoreMv;
-			VoltApplied.Text = ((demandCoreMv > 0) ? "+" : "") + demandCoreMv + " mV";
-			VoltApplied.SetResourceReference(TextBlock.ForegroundProperty, (demandCoreMv == 0L) ? "TextMain" : "Info");
+			MsvddLimitsNow.Text = _appliedMsvddMinMv + "–" + _appliedMsvddMaxMv + " mV";
+			/*
+				MSVDD 的实测电压只有 HWiNFO 有。公开的 NVAPI 接口不暴露这条轨 —— 项目文档
+				里明确写了 "Physical MSVDD ADC is not claimed" —— 所以这里读 HWiNFO 的共享
+				内存，没装或没开共享内存时显示 —，而不是拿请求值冒充实测值。
+			*/
+			double msvddVolts;
+			MsvddVoltNow.Text = Telemetry.TryReadMsvddVolts(out msvddVolts)
+				? msvddVolts.ToString("0.000", CultureInfo.InvariantCulture) + " V"
+				: "—";
+			MsvddVoltNow.SetResourceReference(TextBlock.ForegroundProperty,
+				(msvddVolts > 0.0) ? "Warn" : "TextDim");
 			long microVolts;
 			string error;
 			bool flag = Tuning.TryReadVoltageUv(out microVolts, out error);
@@ -1286,23 +1318,94 @@ private static string Fmt(double v, string unit)
 			SetSlider(VoltSlider, VoltOffsetLabel, _voltOffsetMv);
 			SetSlider(XbarSlider, XbarOffsetLabel, _xbarOffsetMv);
 
-			SetSlider(MinVoltSlider, MinVoltLabel, _baseMinMv + _vminOffsetMv);
-			int ceiling = Math.Min(_baseMaxMv + _relOffsetMv, OV_BASE_MV + _ovOffsetMv);
-			SetSliderQuiet(MaxVoltSlider, ceiling);
-			if (MaxVoltLabel != null)
-			{
-				MaxVoltLabel.Text = ceiling + " mV";
-			}
+			/*
+				The range controls are written from the offsets, not the other way round: the
+				offsets are the record, and the absolute voltages are derived from them plus the
+				rail's baseline. Writing the range therefore has to suppress its own change event,
+				or loading a slot would immediately be re-read as a fresh edit.
+			*/
+			SetRangeQuiet(NvvddRange,
+						  _baseMinMv + _vminOffsetMv,
+						  Math.Min(_baseMaxMv + _relOffsetMv, OV_BASE_MV + _ovOffsetMv));
+			UpdateNvvddRangeLabels();
 
-			SetSlider(MsvddMinSlider, MsvddMinLabel, _msvddBaseMinMv + _msvddVminOffsetMv);
-			int msvddCeiling = Math.Min(_msvddBaseMaxMv + _msvddRelOffsetMv, OV_BASE_MV + _msvddOvOffsetMv);
-			SetSliderQuiet(MsvddMaxSlider, msvddCeiling);
-			if (MsvddMaxLabel != null)
-			{
-				MsvddMaxLabel.Text = msvddCeiling + " mV";
-			}
+			SetRangeQuiet(MsvddRange,
+						  _msvddBaseMinMv + _msvddVminOffsetMv,
+						  Math.Min(_msvddBaseMaxMv + _msvddRelOffsetMv, OV_BASE_MV + _msvddOvOffsetMv));
+			UpdateMsvddRangeLabels();
+		}
 
-			ClampMinSlider();
+		/// <summary>
+		/// Moves a range control without re-entering its handler.
+		///
+		/// Same reason as SetSliderQuiet: an explicit load writes the control, and the control's
+		/// change event would otherwise turn that load straight back into a pending edit.
+		/// </summary>
+		private void SetRangeQuiet(RangeSlider r, int lower, int upper)
+		{
+			if (r == null) return;
+			if (lower > upper) { int t = lower; lower = upper; upper = t; }
+			_syncingVoltControls = true;
+			try
+			{
+				if (Math.Abs(r.LowerValue - (double)lower) > 0.001) r.LowerValue = lower;
+				if (Math.Abs(r.UpperValue - (double)upper) > 0.001) r.UpperValue = upper;
+			}
+			finally { _syncingVoltControls = false; }
+		}
+
+		private void UpdateNvvddRangeLabels()
+		{
+			if (NvvddRange == null) return;
+			int lo = (int)Math.Round(NvvddRange.LowerValue);
+			int hi = (int)Math.Round(NvvddRange.UpperValue);
+			if (NvvddRangeLabel != null) NvvddRangeLabel.Text = lo + "–" + hi + " mV";
+			if (NvvddLowerLabel != null) NvvddLowerLabel.Text = "下限 " + lo + " mV";
+			if (NvvddUpperLabel != null) NvvddUpperLabel.Text = "上限 " + hi + " mV";
+		}
+
+		private void UpdateMsvddRangeLabels()
+		{
+			if (MsvddRange == null) return;
+			int lo = (int)Math.Round(MsvddRange.LowerValue);
+			int hi = (int)Math.Round(MsvddRange.UpperValue);
+			if (MsvddRangeLabel != null) MsvddRangeLabel.Text = lo + "–" + hi + " mV";
+			if (MsvddLowerLabel != null) MsvddLowerLabel.Text = "下限 " + lo + " mV";
+			if (MsvddUpperLabel != null) MsvddUpperLabel.Text = "上限 " + hi + " mV";
+		}
+
+		/// <summary>
+		/// The NVVDD window moved. Both ends are read every time because either thumb can be the
+		/// one that moved, and the offsets are what the rest of the program works in.
+		/// </summary>
+		private void OnNvvddRangeChanged(object sender, EventArgs e)
+		{
+			if (_syncingVoltControls) return;
+			int lo = (int)Math.Round(NvvddRange.LowerValue);
+			int hi = (int)Math.Round(NvvddRange.UpperValue);
+			_vminOffsetMv = lo - _baseMinMv;
+			/*
+				The ceiling is routed to whichever offset can produce it: REL takes 0…+125 on this
+				rail, so it cannot lower the maximum, and anything below the baseline goes to OV.
+				The separate OV slider is gone, but this routing is not — it is the only way the
+				card can be undervolted at all.
+			*/
+			_altOffsetMv = 0;
+			if (hi >= _baseMaxMv) { _relOffsetMv = hi - _baseMaxMv; _ovOffsetMv = 0; }
+			else { _relOffsetMv = 0; _ovOffsetMv = hi - OV_BASE_MV; }
+			UpdateNvvddRangeLabels();
+		}
+
+		private void OnMsvddRangeChanged(object sender, EventArgs e)
+		{
+			if (_syncingVoltControls) return;
+			int lo = (int)Math.Round(MsvddRange.LowerValue);
+			int hi = (int)Math.Round(MsvddRange.UpperValue);
+			_msvddVminOffsetMv = lo - _msvddBaseMinMv;
+			_msvddAltOffsetMv = 0;
+			if (hi >= _msvddBaseMaxMv) { _msvddRelOffsetMv = hi - _msvddBaseMaxMv; _msvddOvOffsetMv = 0; }
+			else { _msvddRelOffsetMv = 0; _msvddOvOffsetMv = hi - OV_BASE_MV; }
+			UpdateMsvddRangeLabels();
 		}
 
 		private static void SetSlider(Slider s, TextBlock label, int value)
@@ -1340,94 +1443,12 @@ private static string Fmt(double v, string unit)
 			}
 		}
 
-		private void OnMinVoltSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-		{
-			if (MinVoltLabel != null)
-			{
-				int num = (int)Math.Round(e.NewValue);
-				_vminOffsetMv = num - _baseMinMv;
-				MinVoltLabel.Text = num + " mV";
-			}
-		}
-
-		private void OnMsvddMinChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-		{
-			if (MsvddMinLabel != null)
-			{
-				int num = (int)Math.Round(e.NewValue);
-				_msvddVminOffsetMv = num - _msvddBaseMinMv;
-				MsvddMinLabel.Text = num + " mV";
-			}
-		}
-
-		private void OnMsvddMaxChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-		{
-			if (MsvddMaxLabel == null || _syncingVoltControls)
-			{
-				return;
-			}
-			int num = (int)Math.Round(e.NewValue);
-			if (num >= _msvddBaseMaxMv)
-			{
-				_msvddRelOffsetMv = num - _msvddBaseMaxMv;
-				_msvddOvOffsetMv = 0;
-			}
-			else
-			{
-				_msvddRelOffsetMv = 0;
-				_msvddOvOffsetMv = num - OV_BASE_MV;
-			}
-			MsvddMaxLabel.Text = num + " mV";
-		}
-
 		/// <summary>
 		/// Set while one handler writes into the other's slider. WPF raises ValueChanged for a
 		/// programmatic assignment just as it does for a drag, so without this the two controls
 		/// would call each other and overwrite the values they had just been given.
 		/// </summary>
 		private bool _syncingVoltControls;
-
-		/// <summary>
-		/// The maximum ceiling, as a voltage the user picks, routed to whichever offset can
-		/// produce it.
-		///
-		/// REL accepts only 0…+125 on this rail (1025…1150 mV) and the tool refuses negative
-		/// values with "within the application bounds", so REL alone cannot lower the ceiling —
-		/// which is why setting 1000 mV first came back as "mVolt+ 未保留 NVDD 偏移（请求
-		/// rel=-25 mV，回读 rel=0 mV）". OV can lower it, and does: its ceiling sits at 1200 mV
-		/// and pulling it down caps the effective maximum once it passes below the REL limit. The
-		/// companion tool reaches its 445-1150 range the same way.
-		///
-		/// ALT/OP is always left at zero. This rail driver reports no operating limit for it and
-		/// the tool rejects any non-zero request outright with "The driver does not report an
-		/// operating limit (ALT/OP) for this rail." Copying the REL value into it, which this
-		/// method used to do, made every apply fail.
-		///
-		/// This is the master control for the ceiling. The OV slider below is linked to it rather
-		/// than independent: both describe the same ceiling, so whichever is moved has to move the
-		/// other, or they would sit there disagreeing about a value they both claim to set.
-		/// </summary>
-		private void OnMaxVoltSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-		{
-			if (MaxVoltLabel == null || _syncingVoltControls)
-			{
-				return;
-			}
-			int num = (int)Math.Round(e.NewValue);
-			_altOffsetMv = 0;
-			if (num >= _baseMaxMv)
-			{
-				_relOffsetMv = num - _baseMaxMv;
-				_ovOffsetMv = 0;
-			}
-			else
-			{
-				_relOffsetMv = 0;
-				_ovOffsetMv = num - OV_BASE_MV;
-			}
-			MaxVoltLabel.Text = num + " mV";
-			ClampMinSlider();
-		}
 
 		/// <summary>
 		/// Moves a slider without re-entering its handler.
@@ -1449,27 +1470,6 @@ private static string Fmt(double v, string unit)
 			finally
 			{
 				_syncingVoltControls = false;
-			}
-		}
-
-		/// <summary>
-		/// Holds the minimum at or below the ceiling in force.
-		///
-		/// The tool rejects a minimum above the upper limits with "The minimum-voltage offset
-		/// conflicts with the current upper voltage limits", so the slider is kept inside what can
-		/// be written instead of being allowed to build a request that is certain to fail.
-		/// </summary>
-		private void ClampMinSlider()
-		{
-			if (MinVoltSlider == null)
-			{
-				return;
-			}
-			int num = Math.Min(_baseMaxMv + _relOffsetMv, OV_BASE_MV + _ovOffsetMv);
-			MinVoltSlider.Maximum = Math.Max(ABS_MIN_MV, num);
-			if (MinVoltSlider.Value > MinVoltSlider.Maximum)
-			{
-				MinVoltSlider.Value = MinVoltSlider.Maximum;
 			}
 		}
 
@@ -1552,7 +1552,10 @@ private static string Fmt(double v, string unit)
 				Warn("未找到 mVolt+。本程序不能直接写电压，需要 mVolt+ 执行写入。\r\n请把它放到本程序同目录，或在“设置”里指定路径。");
 				return;
 			}
-			if (_voltOffsetMv == 0 && _xbarOffsetMv == 0 && _vminOffsetMv == 0 && _relOffsetMv == 0 && _altOffsetMv == 0 && _ovOffsetMv == 0)
+			if (_voltOffsetMv == 0 && _xbarOffsetMv == 0 && _vminOffsetMv == 0 && _relOffsetMv == 0 &&
+				_altOffsetMv == 0 && _ovOffsetMv == 0 &&
+				_msvddVminOffsetMv == 0 && _msvddRelOffsetMv == 0 &&
+				_msvddAltOffsetMv == 0 && _msvddOvOffsetMv == 0)
 			{
 				if (Confirm("把三组电压偏移全部归零？"))
 				{
@@ -1576,14 +1579,21 @@ private static string Fmt(double v, string unit)
 				used to end this message stretched the dialog past the edge of the window and its
 				buttons were cut off at 200% scaling. The offsets were also joined with a bare LF,
 				which the control does not treat as a line break — it needs CRLF.
+
+				Laid out the way the card is, one block per rail. ALT/OP and OV are not listed:
+				nothing on screen can set them. ALT/OP is always left at zero because the rail
+				reports no operating limit and the tool rejects a non-zero request outright, and OV
+				lost its slider. Printing them made the dialog describe controls that do not exist.
 			*/
 			string text =
-				"VMIN   限值偏移 " + Signed(_vminOffsetMv) + "\r\n" +
-				"REL    限值偏移 " + Signed(_relOffsetMv) + "\r\n" +
-				"ALT/OP 限值偏移 " + Signed(_altOffsetMv) + "\r\n" +
-				"OV     限值偏移 " + Signed(_ovOffsetMv) + "\r\n" +
-				"核心   需求偏移 " + Signed(_voltOffsetMv) + "\r\n" +
-				"XBAR   需求偏移 " + Signed(_xbarOffsetMv);
+				"NVVDD（核心供电轨）\r\n" +
+				"  最低电压 VMIN    " + Signed(_vminOffsetMv) + "\r\n" +
+				"  最高电压 REL/ALT " + Signed(_relOffsetMv) + "\r\n" +
+				"  核心电压请求     " + Signed(_voltOffsetMv) + "\r\n" +
+				"MSVDD（交换网络 / 内存接口）\r\n" +
+				"  最低电压 VMIN    " + Signed(_msvddVminOffsetMv) + "\r\n" +
+				"  最高电压 REL/ALT " + Signed(_msvddRelOffsetMv) + "\r\n" +
+				"  XBAR 电压请求    " + Signed(_xbarOffsetMv);
 			string warning =
 				"电压修改可能导致显卡不稳定、驱动重置，\r\n" +
 				"极端情况会损坏供电轨。\r\n" +
@@ -1602,6 +1612,18 @@ private static string Fmt(double v, string unit)
 				RelUv = (long)_relOffsetMv * 1000L,
 				AltUv = (long)_altOffsetMv * 1000L,
 				OvUv = (long)_ovOffsetMv * 1000L
+			};
+			/*
+				MSVDD is the other rail and has to go down with NVVDD. Without this the two MSVDD
+				sliders moved and the confirmation listed them, but nothing was ever sent — the
+				apply path only ever built the NVVDD offsets.
+			*/
+			desiredState.Voltage.Msvdd = new RailOffsets
+			{
+				VminUv = (long)_msvddVminOffsetMv * 1000L,
+				RelUv = (long)_msvddRelOffsetMv * 1000L,
+				AltUv = (long)_msvddAltOffsetMv * 1000L,
+				OvUv = (long)_msvddOvOffsetMv * 1000L
 			};
 			desiredState.Voltage.Enabled = true;
 			if (!MVolt.Apply(_state.MvoltPath, desiredState.Voltage, out var error2, out var rounded))
@@ -1653,6 +1675,11 @@ private static string Fmt(double v, string unit)
 			into.Clock.CoreOffsetMhz = array2[0];
 			into.Clock.MemoryOffsetMhz = array2[1];
 			into.Clock.XbarOffsetMhz = array2[2];
+			// SYS 走 mVolt+，但和另外三个共用同一个「应用」按钮和同一条状态记录，
+			// 所以在这里一起收集；下发时再分开走各自的路。
+			long sysMhz;
+			into.Clock.SysOffsetMhz = long.TryParse(ClkSys.Text.Trim(), NumberStyles.Integer,
+													CultureInfo.InvariantCulture, out sysMhz) ? sysMhz : 0L;
 			into.Clock.Enabled = !into.Clock.IsZero;
 		}
 
@@ -1681,6 +1708,25 @@ private static string Fmt(double v, string unit)
 					}
 				}
 			}
+
+			// SYS 的可用范围由 mVolt+ 报告，不走 Pstates20，所以单独校验。
+			MVoltSnapshot sysSnap = MVolt.QueryStatus(_state.MvoltPath);
+			if (sysSnap.Ok && sysSnap.SysLimitMaxMhz != 0)
+			{
+				long sysWanted;
+				if (!long.TryParse(ClkSys.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out sysWanted))
+				{
+					error = "SYS 偏移必须是整数 MHz。";
+					return false;
+				}
+				if (sysWanted < sysSnap.SysLimitMinMhz || sysWanted > sysSnap.SysLimitMaxMhz)
+				{
+					error = string.Format(CultureInfo.InvariantCulture,
+						"SYS 偏移超出本机范围：允许 {0} … {1} MHz，你填的是 {2}。",
+						sysSnap.SysLimitMinMhz, sysSnap.SysLimitMaxMhz, sysWanted);
+					return false;
+				}
+			}
 			return true;
 		}
 
@@ -1691,6 +1737,7 @@ private static string Fmt(double v, string unit)
 			ClkCore.Text = _state.Clock.CoreOffsetMhz.ToString(CultureInfo.InvariantCulture);
 			ClkMem.Text = _state.Clock.MemoryOffsetMhz.ToString(CultureInfo.InvariantCulture);
 			ClkXbar.Text = _state.Clock.XbarOffsetMhz.ToString(CultureInfo.InvariantCulture);
+			ClkSys.Text = _state.Clock.SysOffsetMhz.ToString(CultureInfo.InvariantCulture);
 		}
 
 		// ------------------------------------------------------------------ clock steppers
@@ -1701,6 +1748,8 @@ private static string Fmt(double v, string unit)
 		private void OnClkMemPlus(object sender, RoutedEventArgs e) { StepClock(ClkMem, CLK_STEP_MHZ); }
 		private void OnClkXbarMinus(object sender, RoutedEventArgs e) { StepClock(ClkXbar, -CLK_STEP_MHZ); }
 		private void OnClkXbarPlus(object sender, RoutedEventArgs e) { StepClock(ClkXbar, CLK_STEP_MHZ); }
+		private void OnClkSysMinus(object sender, RoutedEventArgs e) { StepClock(ClkSys, -CLK_STEP_MHZ); }
+		private void OnClkSysPlus(object sender, RoutedEventArgs e) { StepClock(ClkSys, CLK_STEP_MHZ); }
 
 		/// <summary>
 		/// Nudges a clock offset field by one step and keeps it inside the writable range.
@@ -1796,6 +1845,19 @@ private static string Fmt(double v, string unit)
 					Warn(error2);
 					return;
 				}
+				/*
+					SYS 单独走一次 mVolt+：另外三个域走 NVAPI，这个域没有对应的接口。
+					失败不回滚已经应用好的三个 —— 它们是各自独立的设置，把能工作的
+					一起撤掉只会让"哪一项没生效"更难判断，所以这里只把失败讲清楚。
+				*/
+				if (_mvoltReady && desiredState.Clock.SysOffsetMhz != _state.Clock.SysOffsetMhz)
+				{
+					string sysErr;
+					if (!MVolt.SetSysOffset(_state.MvoltPath, desiredState.Clock.SysOffsetMhz, out sysErr))
+					{
+						Warn("核心/显存/XBAR 已应用，但 SYS 偏移没有生效：\r\n" + sysErr);
+					}
+				}
 				_state.Clock = desiredState.Clock;
 				SaveState();
 				Store.Log("频率偏移已应用");
@@ -1810,6 +1872,7 @@ private static string Fmt(double v, string unit)
 			ClkCore.Text = "0";
 			ClkMem.Text = "0";
 			ClkXbar.Text = "0";
+			ClkSys.Text = "0";
 			SaveState();
 			RefreshClocksPanel();
 			Store.Log("频率偏移已重置");

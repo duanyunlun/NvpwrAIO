@@ -185,6 +185,7 @@ void SerializeState(const DesiredState& st, const std::wstring& prefix,
     o << prefix << L"clock_core_mhz=" << st.clock.coreOffsetMhz;            out.push_back(o.str()); o.str(L"");
     o << prefix << L"clock_memory_mhz=" << st.clock.memoryOffsetMhz;        out.push_back(o.str()); o.str(L"");
     o << prefix << L"clock_xbar_mhz=" << st.clock.xbarOffsetMhz;            out.push_back(o.str()); o.str(L"");
+    o << prefix << L"clock_sys_mhz=" << st.clock.sysOffsetMhz;              out.push_back(o.str()); o.str(L"");
     o << prefix << L"start_with_windows=" << (st.startWithWindows ? 1 : 0); out.push_back(o.str()); o.str(L"");
     o << prefix << L"start_minimized=" << (st.startMinimized ? 1 : 0);       out.push_back(o.str()); o.str(L"");
     /*
@@ -244,6 +245,7 @@ void DeserializeState(const KvList& kv, const std::wstring& prefix,
         else if (key == L"clock_core_mhz")     out.clock.coreOffsetMhz = (long)n;
         else if (key == L"clock_memory_mhz")   out.clock.memoryOffsetMhz = (long)n;
         else if (key == L"clock_xbar_mhz")     out.clock.xbarOffsetMhz = (long)n;
+        else if (key == L"clock_sys_mhz")      out.clock.sysOffsetMhz = (long)n;
         else if (key == L"start_with_windows") out.startWithWindows = (n != 0);
         else if (key == L"start_minimized")    out.startMinimized = (n != 0);
         else if (key == L"power_floor_w")      out.powerFloorW = (unsigned int)n;

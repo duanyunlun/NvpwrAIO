@@ -54,7 +54,18 @@ namespace NvpwrControl
         public bool Enabled;
         public long CoreOffsetMhz, MemoryOffsetMhz, XbarOffsetMhz;
 
-        public bool IsZero { get { return CoreOffsetMhz == 0 && MemoryOffsetMhz == 0 && XbarOffsetMhz == 0; } }
+        /// <summary>
+        /// SYS / host-interface domain offset.
+        ///
+        /// Applied through mVolt+ rather than the NVAPI path the other three use. Core and memory
+        /// ride Pstates20, XBAR goes through the ClockDomains transaction, and SYS has no
+        /// equivalent there — the ClockDomains reader resolves a single domain by design, and the
+        /// XBAR index is baked into it. mVolt+ exposes --sys-offset and reports the range, so that
+        /// is where this one goes. Different mechanism, same "Apply" button.
+        /// </summary>
+        public long SysOffsetMhz;
+
+        public bool IsZero { get { return CoreOffsetMhz == 0 && MemoryOffsetMhz == 0 && XbarOffsetMhz == 0 && SysOffsetMhz == 0; } }
     }
 
     /// <summary>
@@ -272,6 +283,7 @@ namespace NvpwrControl
             b.AppendLine(p + "clock_core_mhz=" + s.Clock.CoreOffsetMhz);
             b.AppendLine(p + "clock_memory_mhz=" + s.Clock.MemoryOffsetMhz);
             b.AppendLine(p + "clock_xbar_mhz=" + s.Clock.XbarOffsetMhz);
+            b.AppendLine(p + "clock_sys_mhz=" + s.Clock.SysOffsetMhz);
             b.AppendLine(p + "start_with_windows=" + (s.StartWithWindows ? 1 : 0));
             b.AppendLine(p + "start_minimized=" + (s.StartMinimized ? 1 : 0));
             b.AppendLine(p + "mvolt_path=" + Sanitize(s.MvoltPath));
@@ -343,6 +355,7 @@ namespace NvpwrControl
             s.Clock.CoreOffsetMhz = num("clock_core_mhz");
             s.Clock.MemoryOffsetMhz = num("clock_memory_mhz");
             s.Clock.XbarOffsetMhz = num("clock_xbar_mhz");
+            s.Clock.SysOffsetMhz = num("clock_sys_mhz");
 
             s.StartWithWindows = num("start_with_windows") != 0;
             s.StartMinimized = num("start_minimized") != 0;
@@ -488,6 +501,15 @@ namespace NvpwrControl
         public long MsvddLimitMinMv, MsvddLimitMaxMv;
         /// <summary>mVolt+ 报告的 BoostLock 状态。</summary>
         public bool BoostLocked;
+
+        /// <summary>
+        /// The SYS domain's current offset and writable range, as mVolt+ reports them.
+        ///
+        /// SYS is the one clock domain this program has no direct interface for: the ClockDomains
+        /// transaction resolves XBAR specifically. mVolt+ does expose it, so the row is filled
+        /// from here and applied through the companion rather than through NVAPI.
+        /// </summary>
+        public long SysOffsetMhz, SysLimitMinMhz, SysLimitMaxMhz;
         public bool HasEnforced;
         public uint EnforcedMw;
     }
@@ -675,6 +697,11 @@ namespace NvpwrControl
             // BoostLock 是布尔，TryLong 解不了，直接找字面量。
             if (json.IndexOf("\"boost_lock\":true", StringComparison.Ordinal) >= 0) snap.BoostLocked = true;
 
+            long sysv;
+            if (TryLong(json, "sys_offset_mhz", out sysv)) snap.SysOffsetMhz = sysv;
+            if (TryLong(json, "sys_offset_mhz_limit_min", out sysv)) snap.SysLimitMinMhz = sysv;
+            if (TryLong(json, "sys_offset_mhz_limit_max", out sysv)) snap.SysLimitMaxMhz = sysv;
+
             long mw;
             if (TryLong(json, "enforced_mw", out mw)) { snap.HasEnforced = true; snap.EnforcedMw = (uint)mw; }
 
@@ -772,6 +799,35 @@ namespace NvpwrControl
             long mv = (mag + 500) / 1000;
             if (mv * 1000 != mag) rounded = true;
             return sign * mv;
+        }
+
+        /// <summary>
+        /// Sets the SYS / host-interface clock offset through the companion tool.
+        ///
+        /// Separate from the other clock domains because it has no NVAPI path here: core and
+        /// memory live in Pstates20 and XBAR goes through the ClockDomains transaction, but SYS is
+        /// only reachable through mVolt+. Verified by readback rather than by exit code, for the
+        /// same reason the voltage writes are.
+        /// </summary>
+        public static bool SetSysOffset(string explicitPath, long mhz, out string error)
+        {
+            error = null;
+            string exe = Find(explicitPath);
+            if (string.IsNullOrEmpty(exe)) { error = "未找到 mVolt+"; return false; }
+            if (!File.Exists(exe)) { error = "配置的 mVolt+ 路径不存在: " + exe; return false; }
+
+            if (Run(exe, "--sys-offset " + mhz.ToString(CultureInfo.InvariantCulture), 30000, out error) == null)
+            {
+                return false;
+            }
+
+            MVoltSnapshot check = QueryStatus(explicitPath);
+            if (check.Ok && check.SysOffsetMhz != mhz)
+            {
+                error = "mVolt+ 未保留 SYS 偏移（请求 " + mhz + " MHz，回读 " + check.SysOffsetMhz + " MHz）";
+                return false;
+            }
+            return true;
         }
 
         /// <summary>

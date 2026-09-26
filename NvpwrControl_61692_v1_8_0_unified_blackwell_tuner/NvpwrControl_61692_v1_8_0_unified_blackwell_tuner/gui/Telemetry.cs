@@ -80,6 +80,85 @@ namespace NvpwrControl
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool FreeLibrary(IntPtr module);
 
+        // HWiNFO 的传感器共享内存，用来读 MSVDD 实测电压。会话级命名，不带 Global\。
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr OpenFileMapping(uint access, bool inherit, string name);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr MapViewOfFile(IntPtr h, uint access, uint hi, uint lo, UIntPtr bytes);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool UnmapViewOfFile(IntPtr p);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr h);
+
+        private const uint FileMapRead = 0x0004;
+        private const string HwInfoMapName = "Global\\HWiNFO_SENS_SM2";
+
+        /// <summary>
+        /// Reads the MSVDD rail voltage out of HWiNFO's shared memory.
+        ///
+        /// WHY not NVAPI: the public surface carries no MSVDD ADC. This project's own notes say
+        /// so — "Physical MSVDD ADC is not claimed" — and the one rail-voltage interface the
+        /// program does use (ClientVoltRailsGetStatus) returns a single value, the core rail.
+        ///
+        /// HWiNFO reads it and publishes it as "GPU MSVDD Voltage". That is a real measurement, so
+        /// it is reported as one; with HWiNFO absent the caller shows a dash rather than a figure
+        /// derived from a request, which would be a different number with a different meaning.
+        ///
+        /// Matched on szLabelOrig: that is the stable English name. The label the user sees in
+        /// HWiNFO's own window is szLabelUser, a separate field that differs per machine.
+        /// </summary>
+        public static bool TryReadMsvddVolts(out double volts)
+        {
+            volts = 0.0;
+            IntPtr h = IntPtr.Zero;
+            IntPtr p = IntPtr.Zero;
+            try
+            {
+                h = OpenFileMapping(FileMapRead, false, HwInfoMapName);
+                if (h == IntPtr.Zero) return false;
+                p = MapViewOfFile(h, FileMapRead, 0, 0, UIntPtr.Zero);
+                if (p == IntPtr.Zero) return false;
+
+                int offReadings = Marshal.ReadInt32(p, 32);
+                int sizeReading = Marshal.ReadInt32(p, 36);
+                int countReading = Marshal.ReadInt32(p, 40);
+                if (offReadings <= 0 || sizeReading <= 0 || countReading <= 0 || countReading > 4096)
+                {
+                    return false;
+                }
+
+                for (int i = 0; i < countReading; i++)
+                {
+                    int o = offReadings + sizeReading * i;
+                    int type = Marshal.ReadInt32(p, o);
+                    if (type != 2) continue;                        // 2 = voltage
+                    string label = ReadAsciiField(p, o + 12, 128);  // szLabelOrig
+                    if (label.IndexOf("MSVDD", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    double v = BitConverter.Int64BitsToDouble(Marshal.ReadInt64(p, o + 284));
+                    if (v > 0.05 && v < 3.0) { volts = v; return true; }
+                }
+                return false;
+            }
+            catch { return false; }
+            finally
+            {
+                if (p != IntPtr.Zero) UnmapViewOfFile(p);
+                if (h != IntPtr.Zero) CloseHandle(h);
+            }
+        }
+
+        private static string ReadAsciiField(IntPtr basePtr, int offset, int max)
+        {
+            byte[] b = new byte[max];
+            Marshal.Copy(new IntPtr(basePtr.ToInt64() + offset), b, 0, max);
+            int end = Array.IndexOf(b, (byte)0);
+            if (end < 0) end = max;
+            return Encoding.ASCII.GetString(b, 0, end);
+        }
+
         private static IntPtr _nvml;
         private static bool _nvmlTried;
 
