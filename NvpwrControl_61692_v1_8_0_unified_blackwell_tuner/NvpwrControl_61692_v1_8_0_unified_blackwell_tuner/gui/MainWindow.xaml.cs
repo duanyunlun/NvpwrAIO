@@ -799,7 +799,21 @@ namespace NvpwrControl
 			for (int i = 0; i < 3; i++)
 			{
 				array[i].IsEnabled = array4[i];
-				if (!array[i].IsFocused)
+
+				/*
+					The value boxes are written only on the first pass.
+
+					This runs every second, and writing the live value into an unfocused box meant a
+					typed offset reverted about a second after the user moved on — the same failure
+					the voltage panel documents, which had been fixed there and not here. The range
+					labels beside the boxes are refreshed every tick, which is right: they describe
+					what the driver will accept, not what the user is asking for.
+
+					After the first pass the boxes are the pending edit. That is the same rule the
+					rest of the card follows — the live values are read once so the window opens
+					showing the truth, and after that 应用 sends whatever is in them.
+				*/
+				if (!_clockControlsSynced && !array[i].IsFocused)
 				{
 					array[i].Text = array5[i].ToString(CultureInfo.InvariantCulture);
 				}
@@ -826,7 +840,7 @@ namespace NvpwrControl
 				ClkSysMaxLabel.Text = sysOk ? ("+" + snap.SysLimitMaxMhz.ToString(CultureInfo.InvariantCulture)) : "—";
 				ClkSysMinLabel.SetResourceReference(TextBlock.ForegroundProperty, sysOk ? "Accent" : "TextDim");
 				ClkSysMaxLabel.SetResourceReference(TextBlock.ForegroundProperty, sysOk ? "Danger" : "TextDim");
-				if (!ClkSys.IsFocused)
+				if (!_clockControlsSynced && !ClkSys.IsFocused)
 				{
 					ClkSys.Text = (snap.Ok ? snap.SysOffsetMhz : _state.Clock.SysOffsetMhz)
 								  .ToString(CultureInfo.InvariantCulture);
@@ -2067,17 +2081,32 @@ private static string Fmt(double v, string unit)
 			}
 		}
 
+		/// <summary>
+		/// Puts the clock offsets back to zero in the window, and does nothing else.
+		///
+		/// It used to call Tuning.Reset() first, which writes the driver — and that produced two
+		/// problems at once.
+		///
+		/// The first was that the call is synchronous on the UI thread and goes through NVAPI, so
+		/// the window froze for a second or two before the numbers even changed. The user sees a
+		/// button that does not respond, then numbers that move on their own.
+		///
+		/// The second was that this was the only one of the three reset buttons that acted
+		/// immediately: voltage and power both only change the pending values and wait for 应用.
+		/// Three buttons with the same name and the same look behaving differently — one applying
+		/// on the spot and two not — is a trap, and the safer of the two behaviours is the one to
+		/// standardise on. A reset that only edits the window cannot surprise anyone, and 应用 is
+		/// right there.
+		/// </summary>
 		private void OnResetClocks(object sender, RoutedEventArgs e)
 		{
-			Tuning.Reset(out var _);
 			_state.Clock = new ClockTuning();
 			ClkCore.Text = "0";
 			ClkMem.Text = "0";
 			ClkXbar.Text = "0";
 			ClkSys.Text = "0";
 			SaveState();
-			RefreshClocksPanel();
-			Store.Log("频率偏移已重置");
+			Store.Log("频率偏移已在界面上归零，等待「应用」下发");
 		}
 
 		private void OnApplyAll(object sender, RoutedEventArgs e)

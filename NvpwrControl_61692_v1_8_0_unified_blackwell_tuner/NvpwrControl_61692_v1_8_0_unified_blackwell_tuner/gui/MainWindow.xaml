@@ -676,12 +676,12 @@
                         </Grid>
 
 
-                        <!-- 清零/应用 act on the whole card, so they stay together on the left;
+                        <!-- 重置/应用 act on the whole card, so they stay together on the left;
                              打开 mVolt+ is a way out to another program and sits apart on the
                              right, where it cannot be hit by mistake while reaching for 应用. -->
                         <Grid Margin="0,12,0,0">
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
-                                <Button Content="清零" Style="{StaticResource BtnDanger}" Padding="10,7"
+                                <Button Content="重置" Style="{StaticResource BtnDanger}" Padding="10,7"
                                         Margin="0,0,7,0" Click="OnVoltReset"/>
                                 <Button Content="应用" Style="{StaticResource BtnPrimary}" MinWidth="48"
                                         Padding="9,7" Margin="0" Click="OnApplyVoltage"/>
