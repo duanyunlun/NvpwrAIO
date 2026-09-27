@@ -88,8 +88,17 @@ $components = @(
     @{ Path = $efiFix;                    Name = 'EfiDSEFix.exe';  Why = 'DSE 开关（本仓库构建）' },
     @{ Path = "$efiBoot\bootx64.efi";     Name = 'bootx64.efi';    Why = 'EfiGuard 引导器' },
     @{ Path = "$efiBoot\EfiGuardDxe.efi"; Name = 'EfiGuardDxe.efi';Why = 'EfiGuard 驱动' },
-    @{ Path = "$stage\Nvpwr.sys";         Name = 'Nvpwr.sys';      Why = '内核驱动' },
-    @{ Path = "$stage\Nvpwr.cer";         Name = 'Nvpwr.cer';      Why = '驱动测试证书' },
+    # Nvpwr.sys 和它的证书取【构建产物】，不是部署目录里那份。
+    #
+    # 这两个原先归在"外部产物"里，从 -Stage 取 —— 但那是错的：build.ps1 每次都会
+    # 重新编译并签名它们，所以部署目录里那份必然是【上一次】的。后果就是"改了驱动
+    # 源码 → 重新打包 → 部署"，报告一路成功，装上去的却是旧驱动，而这一点只能靠比对
+    # 文件大小或哈希才发现。实测踩到过一次：源码里 31,632 B 的新驱动，部署下去的是
+    # 28,048 B 的旧驱动。
+    #
+    # 真正的外部产物只有上面那三件（EfiGuard 的引导器与 DSE 开关），它们不由本仓库构建。
+    @{ Path = (Join-Path $proj 'driver\x64\Release\Nvpwr.sys'); Name = 'Nvpwr.sys'; Why = '内核驱动（本仓库构建）' },
+    @{ Path = (Join-Path $proj 'driver\x64\Release\Nvpwr.cer'); Name = 'Nvpwr.cer'; Why = '驱动测试证书（本仓库构建）' },
     # NvpwrCtl 取本仓库刚构建出来的那份，不是部署目录里那份。
     #
     # 部署目录之所以是"非 GUI 组件的来源"，是因为 EfiDSEFix / bootx64 / Nvpwr.sys 这些

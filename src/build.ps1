@@ -93,7 +93,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Driver compilation failed.' }
   "$wdkKmLib\ntoskrnl.lib" `
   "$wdkKmLib\hal.lib" `
   "$wdkKmLib\wmilib.lib" `
-  /NODEFAULTLIB /MANIFEST:NO /DEBUG /SUBSYSTEM:NATIVE,"10.00" /Driver /OPT:REF /OPT:ICF /ENTRY:"GsDriverEntry" `
+  /NODEFAULTLIB /MANIFEST:NO /DEBUG '/SUBSYSTEM:NATIVE,10.00' /Driver /OPT:REF /OPT:ICF /ENTRY:"GsDriverEntry" `
   /RELEASE /MERGE:"_TEXT=.text;_PAGE=PAGE" /MACHINE:X64 /kernel `
   /OUT:"$driverOut\Nvpwr.sys" "$driverOut\driver.obj"
 if ($LASTEXITCODE -ne 0) { throw 'Driver linking failed.' }
