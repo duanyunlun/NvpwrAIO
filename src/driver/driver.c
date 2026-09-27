@@ -152,7 +152,31 @@
            75..250 W laptops but still rejects implausible policy values.
 */
 #define POWER_OEM_MIN             75000u
+/*
+    POWER_OEM_MAX —— 出厂上限窗口的上界。现在【只用于文档和别处的说明】，不再
+    作为任何判定的门。
+
+    它曾经同时承担两个职责：判断"这个上限像出厂值吗"，以及判断"这台机器的基线
+    是否合理"。前者需要窄（所有受支持机型的出厂上限都在 250 W 以内），后者需要
+    宽（一个被抬高的自洽基线同样合理）。混用的后果是死锁 —— 见 POWER_BASELINE_MAX。
+*/
 #define POWER_OEM_MAX             250000u
+
+/*
+    POWER_BASELINE_MAX —— "可以作为工作基线接受"的上限，与上面那个"像出厂值"的
+    窗口是【两个不同的问题】。
+
+    POWER_OEM_MAX 回答的是"这个上限看起来像工厂设置的吗"，答案必须窄：所有受支持
+    机型的出厂上限都在 250 W 以内。
+
+    POWER_BASELINE_MAX 回答的是"这个上限能不能当作一个可信的起点"，答案必须宽：
+    一个自洽的、被抬高过的策略同样是一个可信的起点。
+
+    这两者混用会死锁。实测：nvlddmkm 里留下一面 275 W 的墙（同一台机器出厂是
+    175 W），驱动因此判不出 STOCK_BASELINE，于是既拒绝设置功耗（入口要求干净
+    基线），又拒绝恢复（恢复路径的窗口同样太窄），用户除了重启没有别的出路。
+*/
+#define POWER_BASELINE_MAX        POWER_CEILING_DEV
 
 /*
     当前生效的构建表项。由 ValidateBuild 按 PE 标识从 g_Targets[] 匹配后写入。
@@ -866,8 +890,26 @@ static VOID FillStatusFromContext(const NVPWR_CONTEXT* Ctx, NVPWR_STATUS* Out)
        No hard-coded 140 W assumption: all Board/F7 paths must agree and the
        generator's dynamic amount must be inactive. 1.9.0 widens the accepted
        window so 75..250 W laptops (including the verified 175 W RTX 5090
-       Laptop) classify as stock instead of falling through to MIXED. */
-    if (Out->UpperBoundary >= POWER_OEM_MIN && Out->UpperBoundary <= POWER_OEM_MAX &&
+       Laptop) classify as stock instead of falling through to MIXED.
+
+       1.9.1 widens the upper bound further, from POWER_OEM_MAX to
+       POWER_BASELINE_MAX, and the distinction matters.
+
+       This branch is reached on the entry-gate path, where the question is not
+       "is this the factory ceiling" but "can I trust this as a starting point".
+       A policy that is stock-shaped in every other respect - base == ceiling,
+       amount inactive, eligibility off, every projection in agreement - is
+       exactly that, whatever the ceiling happens to be. Refusing it because the
+       ceiling is 275 rather than 175 does not protect anything; it produces a
+       state the driver will neither set power from nor restore out of, leaving a
+       reboot as the only exit. Measured on the reference machine.
+
+       The factory value is not lost by this: it lives in the registry record,
+       and both the service's capture path and the interface check
+       OemBaseline <= SupportedMin before treating a live reading as factory. So
+       the field below is a working baseline, which is what the entry gate needs,
+       and not a claim about what the card shipped with. */
+    if (Out->UpperBoundary >= POWER_OEM_MIN && Out->UpperBoundary <= POWER_BASELINE_MAX &&
         Out->MaxEffective == Out->UpperBoundary &&
         Out->MaxSource0Value == Out->UpperBoundary &&
         Out->RootInitialized == 1 &&
@@ -1048,6 +1090,16 @@ static NTSTATUS RestoreStock(VOID);
 /* 1.9.0: user-selectable high bound. MaxRequestedMw is supplied by the caller
    (IOCTL field, clamped to POWER_CEILING_DEV). OEM-baseline validation is
    machine-generic rather than tied to one laptop's factory wattage. */
+/* 1.9.1: the upper end of every OemBaseline window below is POWER_BASELINE_MAX
+   rather than POWER_OEM_MAX or a literal.
+
+   These checks exist to stop a low-power machine from claiming a high-power
+   profile, and that is entirely a LOWER-bound question - the comments say so
+   themselves ("prevents selecting a 5080/5090 profile on a 115/140 W machine").
+   The upper bound contributed nothing except a way to reject a machine whose
+   ceiling had been raised, which is the same machine. Measured: with a leftover
+   275 W ceiling on a factory-175 W 5090 Laptop, every profile window rejected
+   the baseline, so no target could be set at all. */
 static BOOLEAN IsSupportedTarget(ULONG Profile, ULONG Target, ULONG OemBaseline, ULONG MaxRequestedMw)
 {
     ULONG ceiling;
@@ -1076,7 +1128,7 @@ static BOOLEAN IsSupportedTarget(ULONG Profile, ULONG Target, ULONG OemBaseline,
     }
 
     if (Profile == NvpwrProfileRtx5070TiLaptop) {
-        if (OemBaseline < POWER_OEM_MIN || OemBaseline > POWER_OEM_MAX) return FALSE;
+        if (OemBaseline < POWER_OEM_MIN || OemBaseline > POWER_BASELINE_MAX) return FALSE;
         if (Target < POWER_5070_MIN) return FALSE;
         return Target <= ceiling;
     }
@@ -1085,35 +1137,35 @@ static BOOLEAN IsSupportedTarget(ULONG Profile, ULONG Target, ULONG OemBaseline,
         /* High-power profiles are intentionally accepted only when the live OEM
            baseline is already in the 150 W+ class. This prevents selecting a
            5080/5090 profile on a 115/140 W machine. */
-        if (OemBaseline < 150000u || OemBaseline > POWER_OEM_MAX) return FALSE;
+        if (OemBaseline < 150000u || OemBaseline > POWER_BASELINE_MAX) return FALSE;
         if (Target < POWER_HIGH_MIN) return FALSE;
         return Target <= ceiling;
     }
 
     if (Profile == NvpwrProfileRtx4090Laptop) {
         /* RTX 4090 Laptop GPU: OEM baseline typically 115..175 W depending on OEM mode (e.g. Balanced 130 W / Extreme 175 W). */
-        if (OemBaseline < 115000u || OemBaseline > POWER_OEM_MAX) return FALSE;
+        if (OemBaseline < 115000u || OemBaseline > POWER_BASELINE_MAX) return FALSE;
         if (Target < POWER_4090_MIN) return FALSE;
         return Target <= ceiling;
     }
 
     if (Profile == NvpwrProfileRtx4080Laptop) {
         /* RTX 4080 Laptop GPU: OEM baseline typically 115..175 W. */
-        if (OemBaseline < 115000u || OemBaseline > POWER_OEM_MAX) return FALSE;
+        if (OemBaseline < 115000u || OemBaseline > POWER_BASELINE_MAX) return FALSE;
         if (Target < POWER_4080_MIN) return FALSE;
         return Target <= ceiling;
     }
 
     if (Profile == NvpwrProfileRtx4070Laptop || Profile == NvpwrProfileRtx4060Laptop) {
         /* RTX 4060 / 4070 Laptop GPU: OEM baseline typically 95..140 W. */
-        if (OemBaseline < 95000u || OemBaseline > 140000u) return FALSE;
+        if (OemBaseline < 95000u || OemBaseline > POWER_BASELINE_MAX) return FALSE;
         if (Target < POWER_4060_MIN) return FALSE;
         return Target <= (ceiling < POWER_4060_MAX ? POWER_4060_MAX : ceiling);
     }
 
     if (Profile == NvpwrProfileRtx4050Laptop) {
         /* RTX 4050 Laptop GPU: OEM baseline typically 75..140 W. */
-        if (OemBaseline < 75000u || OemBaseline > 140000u) return FALSE;
+        if (OemBaseline < 75000u || OemBaseline > POWER_BASELINE_MAX) return FALSE;
         if (Target < POWER_4050_MIN) return FALSE;
         return Target <= (ceiling < POWER_4050_MAX ? POWER_4050_MAX : ceiling);
     }
@@ -1358,12 +1410,34 @@ static BOOLEAN IsRecoverableExternalModifiedState(const NVPWR_STATUS* S)
         return FALSE;
     if (S->MaxMode != 0 || S->MaxCount != 1 || S->MaxSource0 != SOURCE_FE)
         return FALSE;
+
+    /*
+        天花板一侧：Board MAX 的两处投影必须与 UPPER 一致。
+
+        这两项描述的是"墙允许多少"，它们和 UPPER 一致就说明墙本身是自洽的。
+    */
     if (S->MaxEffective != S->UpperBoundary ||
-        S->MaxSource0Value != S->UpperBoundary ||
-        S->CurrentEffective != S->UpperBoundary ||
-        S->CurrentF7Value != S->UpperBoundary ||
-        S->PredictedF7 != S->UpperBoundary)
+        S->MaxSource0Value != S->UpperBoundary)
         return FALSE;
+
+    /*
+        生成器一侧：三处投影必须【互相】一致，但【允许低于】UPPER。
+
+        原先这里要求三项都等于 UPPER，那是在描述"一次完全成功的抬墙"。而不可恢复
+        的那种状态恰恰是【部分应用】：Phase A 改过 base/amount，Phase B 抬过墙，但
+        生成器没有再跑一次，于是它停留在 base+amount 的值上，比墙低一截。1.8.0 把这
+        一点写成了"只能重启清除"，1.9.0 放宽了数值窗口却漏了这条等式 —— 而部分应用
+        的定义就是这条等式不成立。
+
+        三项互相一致才是"生成器算出了一个确定的结果"；低于 UPPER 是允许的，因为
+        墙本来就只是上限。高于 UPPER 则是不可能的，说明读到的东西不自洽。
+    */
+    if (S->CurrentEffective != S->CurrentF7Value ||
+        S->CurrentF7Value  != S->PredictedF7)
+        return FALSE;
+    if (S->CurrentEffective > S->UpperBoundary)
+        return FALSE;
+
     if (S->RootInitialized != 1 || S->Eligibility != 1 || S->AmountActive != 1)
         return FALSE;
     /* Dynamic Boost share must be a sane fraction of the ceiling. The historical
