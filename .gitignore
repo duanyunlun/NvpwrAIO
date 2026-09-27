@@ -23,6 +23,11 @@
 *.lib
 *.obj
 
+# ---- build.ps1 的分发目录 ----
+# build.ps1 会把驱动、程序和两个脚本拷进 src/dist/。那是构建输出，源头分别是
+# src/driver/、src/gui/、src/cli/、src/service/ 和 src/ 根目录下的那两个脚本。
+src/dist/
+
 # ---- 打包输出 ----
 # release/ 是【有意提交】的完整发布包，所以不在这里排除。
 # 新的打包输出请生成到别处，或用 -OutDir 指定。
