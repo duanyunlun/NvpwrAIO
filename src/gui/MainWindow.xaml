@@ -1,9 +1,24 @@
+<!--
+    这里【不要】写 Icon="NvpwrControl.ico"。
+
+    Window.Icon 的类型是 ImageSource，XAML 用 ImageSourceConverter 把它当【WPF 资源】
+    去解析；而 csproj 里的 ApplicationIcon 只把 .ico 写进 exe 的 Win32 资源表，两者是
+    完全不同的两套东西。于是那个字符串在程序集里找不到对应资源，转换抛异常，程序在
+    XAML 加载阶段就崩 —— 报错是 "在 System.Windows.Baml2006.TypeConverterMarkupExtension
+    上提供值时引发了异常"，看不出和图标有任何关系。
+
+    而不写它并不会让窗口没有图标：Window.Icon 为空时，WPF 就用可执行文件的 Win32 图标，
+    也就是 ApplicationIcon 嵌进去的那个。所以显式声明除了多一个能让程序启动即崩的失败点
+    之外，没有带来任何东西。
+
+    另注：XML 不允许在标签的属性之间写注释。这段最初就写在属性区里，直接导致程序启动
+    即崩 —— 报错同样指向 TypeConverterMarkupExtension，和图标那个问题长得一模一样。
+-->
 <Window x:Class="NvpwrControl.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:NvpwrControl"
         Title="NV显卡功耗软解"
-        Icon="NvpwrControl.ico"
         Width="873" Height="756"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
