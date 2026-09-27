@@ -476,12 +476,32 @@ namespace NvpwrControl
 		{
 			return string.IsNullOrEmpty(c.ManualHint) ? ("当前：" + c.Detail) : c.ManualHint;
 		}
+		/// <summary>
+		/// 版本号，从程序集读而不是写死。
+		///
+		/// 这里原先硬编码着 "1.9.0"，而工程版本早已经走到 1.9.1 —— 日志里那一行因此
+		/// 在事后无法用来判断"这次跑的是哪一版"，而它恰恰是排查问题时的第一手依据。
+		/// 版本号读自 <Version>，所以只有一个地方需要改。
+		/// </summary>
+		private static string AppVersion()
+		{
+			try
+			{
+				Version v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+				if (v == null) return "(unknown)";
+				return v.Major + "." + v.Minor + "." + v.Build;
+			}
+			catch
+			{
+				return "(unknown)";
+			}
+		}
 		private void OnLoaded(object sender, RoutedEventArgs e)
 		{
 			//IL_0120: Unknown result type (might be due to invalid IL or missing references)
 			//IL_0125: Unknown result type (might be due to invalid IL or missing references)
 			//IL_013e: Expected O, but got Unknown
-			Store.Log("NV显卡功耗软解 1.9.0 启动");
+			Store.Log("NV显卡功耗软解 " + AppVersion() + " 启动");
 			CenterOnWorkArea();
 			_gpuName = DetectGpu();
 			_profile = Driver.DetectProfile(_gpuName);

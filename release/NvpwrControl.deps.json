@@ -7,7 +7,7 @@
   "targets": {
     ".NETCoreApp,Version=v6.0": {},
     ".NETCoreApp,Version=v6.0/win-x64": {
-      "NvpwrControl/1.9.0": {
+      "NvpwrControl/1.9.1": {
         "dependencies": {
           "System.Diagnostics.EventLog": "6.0.0",
           "System.ServiceProcess.ServiceController": "6.0.0"
@@ -38,7 +38,7 @@
     }
   },
   "libraries": {
-    "NvpwrControl/1.9.0": {
+    "NvpwrControl/1.9.1": {
       "type": "project",
       "serviceable": false,
       "sha512": ""
