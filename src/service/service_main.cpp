@@ -66,6 +66,57 @@ static HANDLE g_logonEvent = nullptr;
 static const DWORD kSettleMs = 10000;          /* after the desktop appears */
 static const DWORD kDesktopTimeoutMs = 600000; /* give up after ten minutes */
 
+/*
+    Signalled when the machine has just come back onto AC power.
+
+    WHY THIS EXISTS. NVIDIA keeps separate power policies for AC and battery, and the driver
+    recomputes the generator's output whenever the source changes. What it does NOT do is
+    restore the ceiling this program wrote: that value lives in driver memory and is simply
+    carried over, so after an AC/DC round trip the ceiling is still raised while the generator
+    has fallen back to base+amount. That is a partially applied policy - State MIXED - and it
+    is what this machine produced three times a day, because the mains drops for about a
+    minute three times a day and the battery carries the machine through it.
+
+    Measured on the reference machine: 10-07 13:43 and 18:40 each produced an AcOnline
+    false/true pair 63 seconds apart, and the window read state=3 (MIXED) with
+    current=200000 upper=275000 afterwards. No reboot, no nvlddmkm reload - the AC/DC
+    transition alone was enough.
+
+    The replay has to wait for AC specifically. On battery the ceiling must stay where the
+    firmware put it: 275 W on battery drains the pack in minutes and is not what the user
+    asked for by setting a wall they intended to use while plugged in. So the service
+    replays on the battery->AC edge and does nothing on the AC->battery edge.
+*/
+static HANDLE g_powerEvent = nullptr;
+
+/*
+    Debounce for the power transition.
+
+    A single mains drop does not produce a single notification. The reference machine's log
+    shows AcDcBurst arriving twice within seconds of each transition (13:43:12 off, then
+    13:43:14 and 13:43:18, then 13:44:15 on), and the driver is recomputing its policy
+    throughout. Writing the ceiling in the middle of that is the situation the header comment
+    warns about - the one that hung this machine. So a notification only restarts a timer, and
+    the replay runs after the burst has been quiet for kPowerSettleMs.
+*/
+static const DWORD kPowerSettleMs = 20000;
+
+/*
+    Reads the current source from the kernel.
+
+    GetSystemPowerStatus is the authoritative answer and costs nothing. A PBT_ notification
+    carries the event kind, not the state, and a burst can deliver several kinds in any order;
+    asking the OS directly - once the burst has gone quiet - removes the ordering question
+    entirely. The handler also consults it, but only to decide whether there is anything worth
+    waking the thread for; the thread re-reads it because the last notification in a burst is
+    not necessarily the one that describes the final state.
+*/
+static bool OnAcPower() {
+    SYSTEM_POWER_STATUS sps{};
+    if (!GetSystemPowerStatus(&sps)) return false;
+    return sps.ACLineStatus == 1; /* 0 = battery, 1 = AC, 255 = unknown */
+}
+
 /* ------------------------------------------------------------------ */
 /* logging                                                            */
 /* ------------------------------------------------------------------ */
@@ -101,8 +152,11 @@ static void SetServiceState(DWORD state, DWORD exitCode = NO_ERROR, DWORD hint =
     if (state == SERVICE_START_PENDING || state == SERVICE_STOP_PENDING)
         g_status.dwControlsAccepted = 0;
     else
+        /* POWEREVENT is what makes the AC/DC recovery possible at all. Without it the SCM
+           never delivers the transition, and the ceiling stays raised over a generator that
+           has fallen back - the state this machine reached three times a day. */
         g_status.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN |
-                                      SERVICE_ACCEPT_SESSIONCHANGE;
+                                      SERVICE_ACCEPT_SESSIONCHANGE | SERVICE_ACCEPT_POWEREVENT;
     SetServiceStatus(g_statusHandle, &g_status);
 }
 
@@ -725,8 +779,28 @@ static bool ReplayDesiredState(const wchar_t* reason, int attempts = 1, int dela
                 ok = true;
                 stageErr.clear();
 
-                /* Stage 1: power limit. This is the part only this project can do. */
+                /* Stage 1: power limit. This is the part only this project can do.
+
+                   RESTORE FIRST, ALWAYS. The driver's entry gate only accepts a request from
+                   StockBaseline, Armed or Applied; a partially applied policy - the MIXED
+                   state an AC/DC round trip leaves behind - is rejected outright with
+                   STATUS_INVALID_PARAMETER, which surfaces as Win32 22. Measured here: from
+                   MIXED, SET_POWER returned Win32=22 with the policy untouched.
+
+                   Returning to the factory policy first makes the request legal again, and it
+                   costs nothing when the state is already clean: RestoreStock returns success
+                   immediately when it finds a coherent OEM baseline, so this is a no-op on a
+                   normal boot and the fix for a torn one. Doing it inside the retry loop also
+                   means a retry starts from a known-good policy rather than from whatever the
+                   previous failed attempt left behind. */
                 if (state.powerEnabled && state.power.milliwatts) {
+                    std::wstring rerr;
+                    if (!SendRestore(rerr)) {
+                        /* Not fatal on its own - report and let SET_POWER have its say, since
+                           the reason restore was refused may also explain a refusal there. */
+                        stageErr += L"restore: " + rerr + L"; ";
+                    }
+
                     std::wstring perr;
                     if (!SendPower(state.power.milliwatts, state.power.ceilingMw,
                                    state.power.profile, perr)) {
@@ -857,9 +931,84 @@ static void WaitForDesktopThenReplay() {
     SvcLog(L"replay(startup): letting the display stack settle for 10 s");
     if (WaitForSingleObject(g_stopEvent, kSettleMs) == WAIT_OBJECT_0) return;
 
+    /*
+        Do not raise the wall on battery.
+
+        A boot that happens while the machine is on the pack - the mains dropped before the
+        machine was switched on, or the power was cut and the machine restarted on battery -
+        must not replay. A raised wall is a request to draw more power than the firmware
+        allows, and asking for that on battery is both something the user did not ask for and
+        the fastest way to empty the pack. The factory ceiling stays in place, and the power
+        thread replays as soon as the mains returns.
+
+        This is also why nothing replays on the AC->battery edge: the same rule, applied to the
+        same question.
+    */
+    if (!OnAcPower()) {
+        SvcLog(L"replay(startup): on battery; leaving the factory ceiling in place until AC returns");
+        return;
+    }
+
     /* Retry within the replay itself: the display stack is usually up by now, but the driver
        may still refuse until its own readiness checks pass. */
     ReplayDesiredState(L"startup", /*attempts*/ 12, /*delayMs*/ 5000);
+}
+
+/* ------------------------------------------------------------------ */
+
+/*
+    Waits for a power transition to stop moving, then replays if the machine is on AC.
+
+    Two waits, for two different reasons:
+
+      - the burst. One mains drop produces several notifications within seconds, and the driver
+        is recomputing its policy throughout. Waiting for quiet means the write lands on a
+        settled policy instead of racing the recomputation.
+
+      - the source. Only the battery->AC direction is replayed. The ceiling is deliberately
+        left alone on battery: the whole point of a raised wall is to draw more power than the
+        firmware allows, and doing that on the pack is not what someone means when they set a
+        wall they intend to use plugged in. A boot that happens on battery is therefore left
+        at the factory value until the mains returns, which is also the safer order - the
+        machine is not asked to sustain 275 W while it is running off a battery.
+
+    The debounce is implemented by resetting the event's wait, not by a timer: a notification
+    that arrives during the quiet period simply re-enters the loop and starts the wait again.
+*/
+static DWORD WINAPI PowerEventThread(LPVOID) {
+    for (;;) {
+        /* Wait for a notification, or for the service to stop. */
+        HANDLE waits[2] = { g_stopEvent, g_powerEvent };
+        DWORD w = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+        if (w == WAIT_OBJECT_0) return 0;   /* stopping */
+        if (w != WAIT_OBJECT_0 + 1) return 0;
+
+        /*
+            Absorb the rest of the burst: every time another notification arrives before the
+            quiet period expires, the wait restarts. Loop until the event stays unsignalled for
+            the full interval.
+        */
+        for (;;) {
+            DWORD r = WaitForMultipleObjects(2, waits, FALSE, kPowerSettleMs);
+            if (r == WAIT_OBJECT_0) return 0;        /* stopping */
+            if (r == WAIT_TIMEOUT) break;            /* quiet - act on it */
+            /* Another notification arrived; keep waiting. The source is re-read after the
+               burst rather than here, because the burst's last event is not necessarily the
+               one that describes the final state. */
+        }
+
+        /* Re-read the source now rather than trusting the burst. */
+        bool ac = OnAcPower();
+        if (!ac) {
+            SvcLog(L"replay(power): source is battery; leaving the factory ceiling in place");
+            continue;
+        }
+
+        SvcLog(L"replay(power): AC restored and settled; replaying");
+        /* The replay restores to the factory policy first, which is what makes the request
+           legal again after the transition tore it. See ReplayDesiredState. */
+        ReplayDesiredState(L"power", /*attempts*/ 1, /*delayMs*/ 0);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -875,6 +1024,33 @@ static DWORD WINAPI ServiceThread(LPVOID) {
         The replay itself no longer runs here directly — see WaitForDesktopThenReplay.
     */
     WaitForDesktopThenReplay();
+
+    /*
+        Start the power-transition watcher.
+
+        Started after the first replay so a boot that is still settling cannot have two writers
+        in the driver at once: WaitForDesktopThenReplay has already returned by the time this
+        thread can act, and its own debounce keeps it from firing during startup anyway.
+
+        Auto-reset, like g_logonEvent: the waiter consumes one notification and a later
+        transition signals it again. Manual-reset would stay signalled and make every
+        subsequent wait return instantly, which would turn the debounce into a spin.
+    */
+    g_powerEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (g_powerEvent) {
+        HANDLE t = CreateThread(nullptr, 0, PowerEventThread, nullptr, 0, nullptr);
+        if (t) {
+            CloseHandle(t);
+        } else {
+            SvcLog(L"WARNING: power-transition watcher could not start; "
+                   L"AC/DC transitions will not be recovered");
+            CloseHandle(g_powerEvent);
+            g_powerEvent = nullptr;
+        }
+    } else {
+        SvcLog(L"WARNING: power-transition event could not be created; "
+               L"AC/DC transitions will not be recovered");
+    }
 
     /*
         Nothing left to do but wait to be stopped.
@@ -914,6 +1090,41 @@ static DWORD WINAPI ServiceControl(DWORD control, DWORD eventType, LPVOID eventD
     case SERVICE_CONTROL_INTERROGATE:
         SetServiceStatus(g_statusHandle, &g_status);
         return NO_ERROR;
+
+    /*
+        A power-source transition, a resume, or a suspend.
+
+        Only three of the PBT_ events are interesting, and only one of them is the reason this
+        handler exists:
+
+          PBT_APMPOWERSTATUSCHANGE  the AC/DC source changed - the mains drop this machine sees
+                                    three times a day. This is the one that leaves the torn
+                                    policy behind.
+          PBT_APMRESUMEAUTOMATIC    woke without user input; the driver may have reloaded.
+          PBT_APMRESUMESUSPEND      woke because the user asked.
+
+        PBT_APMSUSPEND and PBT_APMRESUMECRITICAL are deliberately not handled: the first is a
+        notification that the machine is going down (nothing to do), and the second follows a
+        critical resume where the driver state is not trustworthy enough to write into.
+
+        The handler must return promptly - the SCM is waiting on it - so it does not replay.
+        It records whether the machine is on AC and wakes the debounce thread. Deciding on AC
+        here rather than in the thread keeps the answer close to the event, and re-reading it
+        after the debounce would also be correct; either way the thread acts only if the
+        machine is on wall power when it wakes.
+    */
+    case SERVICE_CONTROL_POWEREVENT:
+        if (eventType == PBT_APMPOWERSTATUSCHANGE ||
+            eventType == PBT_APMRESUMEAUTOMATIC ||
+            eventType == PBT_APMRESUMESUSPEND) {
+            /* Wake the watcher for either direction and let it decide. Handling the AC->battery
+               edge here as well costs nothing - the watcher checks the source itself and does
+               not write when it finds battery - and it keeps the policy in one place instead of
+               splitting it between the handler and the thread. */
+            if (g_powerEvent) SetEvent(g_powerEvent);
+        }
+        return NO_ERROR;
+
     default:
         return ERROR_CALL_NOT_IMPLEMENTED;
     }
