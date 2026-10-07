@@ -237,22 +237,27 @@ A: 开机时自动把设置重放一遍，省得每次手动开程序点一下�
 七、目录内容
 ----------------------------------------------------------------
 
-NvpwrControl.exe     主程序（界面）
-NvpwrControl.dll     主程序依赖
-NvpwrControl.pdb     调试符号（可删）
-Nvpwr.sys            内核驱动（真正改功耗的）
-Nvpwr.cer            驱动签名证书
-NvpwrCtl.exe         命令行工具（调试用）
-NvpwrSvc.exe         后台服务（开机重放设置）
-EfiDSEFix.exe        驱动签名强制开关（EfiGuard 的组件，本仓库编译）
-bootx64.efi          EfiGuard 引导器（复制到 EFIGUARD 分区）
-EfiGuardDxe.efi       EfiGuard 驱动（复制到 EFIGUARD 分区）
-mvolt+.exe           电压调整（第三方，随包附带）
+  NvpwrControl.exe       主程序（界面）
+  NvpwrControl.dll       主程序逻辑
+  NvpwrControl.deps.json / .runtimeconfig.json   主程序配置
 
-流程说明.md           技术实现细节（开发者向，普通使用不必看）
+  ★ 其余约 270 个 .dll / .json 是主程序【自带的 .NET 运行时】。
+    本包是自包含发布，所以不需要你先安装 .NET —— 这也正是它体积
+    有 100 多 MB 的原因。请不要删除或移动这些文件，删了程序就起不来。
+    整个目录可以随意整体搬走或改名，程序不依赖安装路径。
 
+  Nvpwr.sys              内核驱动（真正改功耗的）
+  Nvpwr.cer              驱动签名证书
+  NvpwrCtl.exe           命令行工具（调试用）
+  NvpwrSvc.exe           后台服务（开机重放设置）
+  EfiDSEFix.exe          驱动签名强制开关（EfiGuard 的组件，本仓库编译）
+  bootx64.efi            EfiGuard 引导器（复制到 EFIGUARD 分区）
+  EfiGuardDxe.efi        EfiGuard 驱动（复制到 EFIGUARD 分区）
+  mvolt+.exe             电压调整（第三方，随包附带）
 
-----------------------------------------------------------------
+  使用说明.txt           本文件
+  流程说明.md            技术实现细节（开发者向，普通使用不必看）
+
 八、声明
 ----------------------------------------------------------------
 
